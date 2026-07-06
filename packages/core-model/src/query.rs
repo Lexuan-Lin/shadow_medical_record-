@@ -1,6 +1,7 @@
-use crate::types::parse_dt;
+use crate::types::{parse_dt, Document, SourceFile};
 use crate::{DocType, MedmeError, Vault};
 use chrono::{DateTime, Utc};
+use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -77,6 +78,65 @@ impl Vault {
             |r| r.get(0),
         )?;
         Ok(n > 0)
+    }
+
+    pub fn document_by_id(&self, id: i64) -> Result<Option<Document>, MedmeError> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT id, source_file_id, doc_type, doc_date, title, language, page_count, created_at
+                 FROM document WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(Document {
+                        id: r.get(0)?,
+                        source_file_id: r.get(1)?,
+                        doc_type: DocType::from_str(&r.get::<_, String>(2)?),
+                        doc_date: r.get::<_, Option<String>>(3)?.map(parse_dt),
+                        title: r.get(4)?,
+                        language: r.get(5)?,
+                        page_count: r.get(6)?,
+                        created_at: parse_dt(r.get::<_, String>(7)?),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn source_file_by_id(&self, id: i64) -> Result<Option<SourceFile>, MedmeError> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT id, content_hash, original_name, mime_type, byte_size, storage_path, imported_at
+                 FROM source_file WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(SourceFile {
+                        id: r.get(0)?,
+                        content_hash: r.get(1)?,
+                        original_name: r.get(2)?,
+                        mime_type: r.get(3)?,
+                        byte_size: r.get(4)?,
+                        storage_path: r.get(5)?,
+                        imported_at: parse_dt(r.get::<_, String>(6)?),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn ocr_text(&self, document_id: i64) -> Result<String, MedmeError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT text FROM ocr_result WHERE document_id = ?1 ORDER BY page_no ASC",
+        )?;
+        let rows = stmt.query_map([document_id], |r| r.get::<_, String>(0))?;
+        let mut parts = Vec::new();
+        for r in rows {
+            parts.push(r?);
+        }
+        Ok(parts.join("\n"))
     }
 }
 
@@ -172,6 +232,28 @@ mod tests {
         assert_eq!(t[0].title.as_deref(), Some("new"));
         assert_eq!(t[1].title.as_deref(), Some("old"));
         assert!(t[2].doc_date.is_none()); // NULL 最后
+    }
+
+    #[test]
+    fn reads_document_source_and_ocr_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        seed(&v, "血常规", "肌酐 Creatinine 120", Some("2023-05-01T00:00:00Z"));
+
+        let doc = v.timeline().unwrap()[0].clone();
+        let full = v.document_by_id(doc.document_id).unwrap().unwrap();
+        assert_eq!(full.title.as_deref(), Some("血常规"));
+
+        let sf = v.source_file_by_id(full.source_file_id).unwrap().unwrap();
+        assert_eq!(sf.original_name, "血常规");
+
+        let text = v.ocr_text(doc.document_id).unwrap();
+        assert!(text.contains("Creatinine"));
+
+        // 不存在的 id → None / 空
+        assert!(v.document_by_id(99999).unwrap().is_none());
+        assert!(v.source_file_by_id(99999).unwrap().is_none());
+        assert_eq!(v.ocr_text(99999).unwrap(), "");
     }
 
     #[test]
