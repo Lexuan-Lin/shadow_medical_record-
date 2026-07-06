@@ -9,7 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 core-model = { path = "../../packages/core-model" }
-parser = { path = "../../packages/parser" }
 pipeline = { path = "../../packages/pipeline" }
 clap.workspace = true
 anyhow.workspace = true

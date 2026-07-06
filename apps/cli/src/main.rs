@@ -30,7 +30,8 @@ fn main() -> anyhow::Result<()> {
                         format!("import {} (id={}, type={})", o.name, o.source_file_id,
                                 o.doc_type.as_ref().map(|d| d.as_str()).unwrap_or("unknown")),
                     pipeline::IngestStatus::Backfilled =>
-                        format!("index  {} (backfilled, id={})", o.name, o.source_file_id),
+                        format!("index  {} (backfilled, id={}, type={})", o.name, o.source_file_id,
+                                o.doc_type.as_ref().map(|d| d.as_str()).unwrap_or("unknown")),
                     pipeline::IngestStatus::Deduped =>
                         format!("dedup  {} (already stored & indexed, id={})", o.name, o.source_file_id),
                     pipeline::IngestStatus::StoredNoText =>
