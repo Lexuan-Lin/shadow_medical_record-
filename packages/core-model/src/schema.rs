@@ -45,8 +45,7 @@ CREATE VIRTUAL TABLE document_fts USING fts5(
 pub fn migrate(conn: &Connection) -> Result<(), MedmeError> {
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v < 1 {
-        conn.execute_batch(SCHEMA_V1)?;
-        conn.execute_batch("PRAGMA user_version = 1;")?;
+        conn.execute_batch(&format!("BEGIN;\n{SCHEMA_V1}\nPRAGMA user_version = 1;\nCOMMIT;"))?;
     }
     Ok(())
 }
