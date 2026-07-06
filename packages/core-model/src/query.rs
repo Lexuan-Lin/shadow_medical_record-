@@ -14,6 +14,7 @@ pub struct SearchHit {
 pub struct TimelineEntry {
     pub document_id: i64,
     pub doc_date: Option<DateTime<Utc>>,
+    pub doc_date_end: Option<DateTime<Utc>>,
     pub doc_type: DocType,
     pub title: Option<String>,
 }
@@ -51,16 +52,18 @@ impl Vault {
 
     pub fn timeline(&self) -> Result<Vec<TimelineEntry>, MedmeError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id, doc_date, doc_type, title FROM document
+            "SELECT id, doc_date, doc_date_end, doc_type, title FROM document
              ORDER BY doc_date IS NULL, doc_date DESC, id DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             let date_s: Option<String> = r.get(1)?;
+            let date_end_s: Option<String> = r.get(2)?;
             Ok(TimelineEntry {
                 document_id: r.get(0)?,
                 doc_date: date_s.map(parse_dt),
-                doc_type: DocType::from_str(&r.get::<_, String>(2)?),
-                title: r.get(3)?,
+                doc_date_end: date_end_s.map(parse_dt),
+                doc_type: DocType::from_str(&r.get::<_, String>(3)?),
+                title: r.get(4)?,
             })
         })?;
         let mut out = Vec::new();
@@ -84,7 +87,7 @@ impl Vault {
         let row = self
             .conn()
             .query_row(
-                "SELECT id, source_file_id, doc_type, doc_date, title, language, page_count, created_at
+                "SELECT id, source_file_id, doc_type, doc_date, doc_date_end, title, language, page_count, created_at
                  FROM document WHERE id = ?1",
                 [id],
                 |r| {
@@ -93,10 +96,11 @@ impl Vault {
                         source_file_id: r.get(1)?,
                         doc_type: DocType::from_str(&r.get::<_, String>(2)?),
                         doc_date: r.get::<_, Option<String>>(3)?.map(parse_dt),
-                        title: r.get(4)?,
-                        language: r.get(5)?,
-                        page_count: r.get(6)?,
-                        created_at: parse_dt(r.get::<_, String>(7)?),
+                        doc_date_end: r.get::<_, Option<String>>(4)?.map(parse_dt),
+                        title: r.get(5)?,
+                        language: r.get(6)?,
+                        page_count: r.get(7)?,
+                        created_at: parse_dt(r.get::<_, String>(8)?),
                     })
                 },
             )
@@ -158,6 +162,7 @@ mod tests {
                 source_file_id: imp.source_file.id,
                 doc_type: DocType::LabReport,
                 doc_date,
+                doc_date_end: None,
                 title: Some(title.into()),
                 language: Some("mixed".into()),
                 page_count: 1,
@@ -266,6 +271,7 @@ mod tests {
             source_file_id: imp.source_file.id,
             doc_type: crate::DocType::Unknown,
             doc_date: None,
+            doc_date_end: None,
             title: None,
             language: None,
             page_count: 1,

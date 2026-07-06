@@ -80,6 +80,7 @@ pub struct Document {
     pub source_file_id: i64,
     pub doc_type: DocType,
     pub doc_date: Option<DateTime<Utc>>,
+    pub doc_date_end: Option<DateTime<Utc>>,
     pub title: Option<String>,
     pub language: Option<String>,
     pub page_count: i32,
@@ -90,6 +91,7 @@ pub struct NewDocument {
     pub source_file_id: i64,
     pub doc_type: DocType,
     pub doc_date: Option<DateTime<Utc>>,
+    pub doc_date_end: Option<DateTime<Utc>>,
     pub title: Option<String>,
     pub language: Option<String>,
     pub page_count: i32,
@@ -168,14 +170,16 @@ impl Vault {
     pub fn add_document(&self, d: NewDocument) -> Result<Document, MedmeError> {
         let now = Self::now_rfc3339();
         let date_s = d.doc_date.map(|x| x.to_rfc3339());
+        let date_end_s = d.doc_date_end.map(|x| x.to_rfc3339());
         self.conn().execute(
             "INSERT INTO document
-             (source_file_id, doc_type, doc_date, title, language, page_count, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             (source_file_id, doc_type, doc_date, doc_date_end, title, language, page_count, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             rusqlite::params![
                 d.source_file_id,
                 d.doc_type.as_str(),
                 date_s,
+                date_end_s,
                 d.title,
                 d.language,
                 d.page_count,
@@ -188,6 +192,7 @@ impl Vault {
             source_file_id: d.source_file_id,
             doc_type: d.doc_type,
             doc_date: d.doc_date,
+            doc_date_end: d.doc_date_end,
             title: d.title,
             language: d.language,
             page_count: d.page_count,
@@ -291,6 +296,7 @@ mod tests {
                 source_file_id: imp.source_file.id,
                 doc_type: DocType::LabReport,
                 doc_date: None,
+                doc_date_end: None,
                 title: Some("血常规".into()),
                 language: Some("zh".into()),
                 page_count: 1,

@@ -49,7 +49,7 @@ mod tests {
     fn open_creates_vault_and_migrates() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::open(dir.path()).unwrap();
-        assert_eq!(v.user_version().unwrap(), 1);
+        assert_eq!(v.user_version().unwrap(), 2);
         assert!(dir.path().join("objects").is_dir());
         assert!(dir.path().join("medme.db").is_file());
     }
