@@ -68,6 +68,16 @@ impl Vault {
         }
         Ok(out)
     }
+
+    /// 该 source_file 是否已建立 document(用于判断是否需要补索引)。
+    pub fn has_document(&self, source_file_id: i64) -> Result<bool, MedmeError> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM document WHERE source_file_id = ?1",
+            [source_file_id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +172,23 @@ mod tests {
         assert_eq!(t[0].title.as_deref(), Some("new"));
         assert_eq!(t[1].title.as_deref(), Some("old"));
         assert!(t[2].doc_date.is_none()); // NULL 最后
+    }
+
+    #[test]
+    fn has_document_reflects_indexing() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let imp = v.import("x.txt", "text/plain", b"hello").unwrap();
+        assert!(!v.has_document(imp.source_file.id).unwrap()); // 存了但未建 document
+        v.add_document(crate::types::NewDocument {
+            source_file_id: imp.source_file.id,
+            doc_type: crate::DocType::Unknown,
+            doc_date: None,
+            title: None,
+            language: None,
+            page_count: 1,
+        })
+        .unwrap();
+        assert!(v.has_document(imp.source_file.id).unwrap());
     }
 }

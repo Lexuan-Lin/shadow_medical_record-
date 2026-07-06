@@ -47,10 +47,14 @@ fn main() -> anyhow::Result<()> {
                     .unwrap_or("unknown")
                     .to_string();
                 let imp = vault.import(&name, mime_for(&f), &bytes)?;
-                if imp.deduped {
-                    println!("dedup  {name} (already stored, id={})", imp.source_file.id);
+                if imp.deduped && vault.has_document(imp.source_file.id)? {
+                    println!(
+                        "dedup  {name} (already stored & indexed, id={})",
+                        imp.source_file.id
+                    );
                     continue;
                 }
+                // 新文件,或此前存了但未建 document(如上次无文本层)→ (补)索引
                 // 文本层抽取;失败(如扫描件图片)不致命,留给后续 OCR 计划
                 match parser::extract(&f) {
                     Ok(e) => {
