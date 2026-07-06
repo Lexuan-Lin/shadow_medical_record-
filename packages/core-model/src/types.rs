@@ -1,0 +1,136 @@
+use chrono::{DateTime, Utc};
+use rusqlite::OptionalExtension;
+use crate::{Vault, MedmeError, cas};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocType {
+    LabReport, ImagingReport, DischargeSummary, Prescription,
+    ClinicalNote, Pathology, Other, Unknown,
+}
+impl DocType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DocType::LabReport => "lab_report",
+            DocType::ImagingReport => "imaging_report",
+            DocType::DischargeSummary => "discharge_summary",
+            DocType::Prescription => "prescription",
+            DocType::ClinicalNote => "clinical_note",
+            DocType::Pathology => "pathology",
+            DocType::Other => "other",
+            DocType::Unknown => "unknown",
+        }
+    }
+    pub fn from_str(s: &str) -> DocType {
+        match s {
+            "lab_report" => DocType::LabReport,
+            "imaging_report" => DocType::ImagingReport,
+            "discharge_summary" => DocType::DischargeSummary,
+            "prescription" => DocType::Prescription,
+            "clinical_note" => DocType::ClinicalNote,
+            "pathology" => DocType::Pathology,
+            "other" => DocType::Other,
+            _ => DocType::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OcrBackendKind { Native, Onnx, Vlm }
+impl OcrBackendKind {
+    pub fn as_str(&self) -> &'static str {
+        match self { OcrBackendKind::Native => "native",
+                     OcrBackendKind::Onnx => "onnx",
+                     OcrBackendKind::Vlm => "vlm" }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceFile {
+    pub id: i64,
+    pub content_hash: String,
+    pub original_name: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub storage_path: String,
+    pub imported_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub source_file: SourceFile,
+    pub deduped: bool,
+}
+
+impl Vault {
+    pub(crate) fn now_rfc3339() -> String { Utc::now().to_rfc3339() }
+
+    pub fn import(&self, original_name: &str, mime: &str, bytes: &[u8])
+        -> Result<Import, MedmeError>
+    {
+        let hash = cas::sha256_hex(bytes);
+        // 已登记?
+        if let Some(sf) = self.source_file_by_hash(&hash)? {
+            return Ok(Import { source_file: sf, deduped: true });
+        }
+        let (_h, relpath, _written) = self.store_object(bytes)?;
+        let now = Self::now_rfc3339();
+        self.conn().execute(
+            "INSERT INTO source_file
+             (content_hash, original_name, mime_type, byte_size, storage_path, imported_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![hash, original_name, mime, bytes.len() as i64, relpath, now],
+        )?;
+        let sf = self.source_file_by_hash(&hash)?
+            .ok_or_else(|| MedmeError::Other("insert then missing".into()))?;
+        Ok(Import { source_file: sf, deduped: false })
+    }
+
+    fn source_file_by_hash(&self, hash: &str) -> Result<Option<SourceFile>, MedmeError> {
+        let row = self.conn().query_row(
+            "SELECT id, content_hash, original_name, mime_type, byte_size, storage_path, imported_at
+             FROM source_file WHERE content_hash = ?1",
+            [hash],
+            |r| Ok(SourceFile {
+                id: r.get(0)?,
+                content_hash: r.get(1)?,
+                original_name: r.get(2)?,
+                mime_type: r.get(3)?,
+                byte_size: r.get(4)?,
+                storage_path: r.get(5)?,
+                imported_at: parse_dt(r.get::<_, String>(6)?),
+            }),
+        ).optional()?;
+        Ok(row)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_count(&self, table: &str) -> i64 {
+        self.conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+    }
+}
+
+pub(crate) fn parse_dt(s: String) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Vault;
+
+    #[test]
+    fn import_dedups_by_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+
+        let a = v.import("report.pdf", "application/pdf", b"PDFDATA").unwrap();
+        assert!(!a.deduped);
+
+        // 同内容、不同文件名 → 命中去重,仍是同一 source_file
+        let b = v.import("renamed.pdf", "application/pdf", b"PDFDATA").unwrap();
+        assert!(b.deduped);
+        assert_eq!(a.source_file.id, b.source_file.id);
+
+        let n: i64 = v.debug_count("source_file");
+        assert_eq!(n, 1);
+    }
+}

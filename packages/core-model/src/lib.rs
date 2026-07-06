@@ -1,8 +1,10 @@
 pub mod cas;
 pub mod error;
 pub mod schema;
+pub mod types;
 
 pub use error::MedmeError;
+pub use types::{SourceFile, DocType, OcrBackendKind, Import};
 
 use std::path::{Path, PathBuf};
 use rusqlite::Connection;
@@ -24,6 +26,8 @@ impl Vault {
     pub fn user_version(&self) -> Result<i64, MedmeError> {
         Ok(self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
+
+    pub(crate) fn conn(&self) -> &rusqlite::Connection { &self.conn }
 }
 
 #[cfg(test)]
