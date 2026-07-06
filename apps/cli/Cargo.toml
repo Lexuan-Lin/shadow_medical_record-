@@ -1,6 +1,14 @@
 [package]
-name = "cli"
+name = "medme-cli"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "medme"
+path = "src/main.rs"
+
 [dependencies]
+core-model = { path = "../../packages/core-model" }
+parser = { path = "../../packages/parser" }
+clap.workspace = true
+anyhow.workspace = true
