@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use core_model::{NewDocument, NewOcr, OcrBackendKind, Vault};
+use core_model::Vault;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -17,22 +17,6 @@ enum Cmd {
     Timeline,
 }
 
-fn mime_for(path: &std::path::Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase()
-        .as_str()
-    {
-        "pdf" => "application/pdf",
-        "txt" => "text/plain",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        _ => "application/octet-stream",
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let vault = Vault::open(&cli.vault)?;
@@ -40,50 +24,19 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Import { files } => {
             for f in files {
-                let bytes = std::fs::read(&f)?;
-                let name = f
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let imp = vault.import(&name, mime_for(&f), &bytes)?;
-                if imp.deduped && vault.has_document(imp.source_file.id)? {
-                    println!(
-                        "dedup  {name} (already stored & indexed, id={})",
-                        imp.source_file.id
-                    );
-                    continue;
-                }
-                // 新文件,或此前存了但未建 document(如上次无文本层)→ (补)索引
-                // 文本层抽取;失败(如扫描件图片)不致命,留给后续 OCR 计划
-                match parser::extract(&f) {
-                    Ok(e) => {
-                        let doc = vault.add_document(NewDocument {
-                            source_file_id: imp.source_file.id,
-                            doc_type: e.doc_type,
-                            doc_date: e.doc_date,
-                            title: Some(name.clone()),
-                            language: e.language,
-                            page_count: e.page_count,
-                        })?;
-                        vault.add_ocr(NewOcr {
-                            document_id: doc.id,
-                            page_no: 1,
-                            backend: OcrBackendKind::Native,
-                            model_version: "text-layer".into(),
-                            text: e.text,
-                            confidence: None,
-                        })?;
-                        println!(
-                            "import {name} (id={}, type={})",
-                            imp.source_file.id,
-                            doc.doc_type.as_str()
-                        );
-                    }
-                    Err(err) => {
-                        println!("import {name} (stored, no text layer: {err})");
-                    }
-                }
+                let o = pipeline::ingest(&vault, &f)?;
+                let line = match o.status {
+                    pipeline::IngestStatus::New =>
+                        format!("import {} (id={}, type={})", o.name, o.source_file_id,
+                                o.doc_type.as_ref().map(|d| d.as_str()).unwrap_or("unknown")),
+                    pipeline::IngestStatus::Backfilled =>
+                        format!("index  {} (backfilled, id={})", o.name, o.source_file_id),
+                    pipeline::IngestStatus::Deduped =>
+                        format!("dedup  {} (already stored & indexed, id={})", o.name, o.source_file_id),
+                    pipeline::IngestStatus::StoredNoText =>
+                        format!("import {} (stored, no text layer, id={})", o.name, o.source_file_id),
+                };
+                println!("{line}");
             }
         }
         Cmd::Search { query } => {
