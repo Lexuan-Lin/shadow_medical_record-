@@ -1,5 +1,7 @@
 use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::path::Path;
+use tempfile::NamedTempFile;
 use crate::{Vault, MedmeError};
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -27,13 +29,17 @@ impl Vault {
         if abs.exists() {
             return Ok((hash, rel, false));
         }
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        // 临时文件 + 原子 rename
-        let tmp = abs.with_extension("tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &abs)?;
+        let parent = abs.parent().ok_or_else(|| {
+            MedmeError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "CAS object path has no parent directory",
+            ))
+        })?;
+        std::fs::create_dir_all(parent)?;
+        // 唯一临时文件（同目录）+ 原子 persist,避免并发写入共享同一临时文件名
+        let mut tmp = NamedTempFile::new_in(parent)?;
+        tmp.write_all(bytes)?;
+        tmp.persist(&abs).map_err(|e| MedmeError::Io(e.error))?;
         Ok((hash, rel, true))
     }
 
