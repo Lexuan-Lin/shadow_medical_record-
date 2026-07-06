@@ -1,10 +1,12 @@
 pub mod cas;
 pub mod error;
+pub mod query;
 pub mod schema;
 pub mod tokenize;
 pub mod types;
 
 pub use error::MedmeError;
+pub use query::{SearchHit, TimelineEntry};
 pub use types::{SourceFile, DocType, OcrBackendKind, Import, Document, NewDocument, NewOcr};
 
 use std::path::{Path, PathBuf};
