@@ -187,7 +187,8 @@ pub fn ingest(vault: &Vault, path: &Path) -> anyhow::Result<IngestOutcome> {
         Ok(e) if is_pdf(path) && e.text.trim().len() < MIN_TEXT_LAYER_LEN => {
             // 扫描图 PDF(无文本层):尝试从页面图片 OCR 补文本,像图片一样处理。
             match ocr::recognize_pdf(&bytes) {
-                Ok(text) if !text.trim().is_empty() => {
+                Ok(outcome) if !outcome.text.trim().is_empty() => {
+                    let text = outcome.text;
                     let doc_type = parser::classify(&text);
                     let (doc_date, doc_date_end) = parser::guess_date_range(&text);
                     let doc = vault.add_document(NewDocument {
@@ -205,7 +206,7 @@ pub fn ingest(vault: &Vault, path: &Path) -> anyhow::Result<IngestOutcome> {
                         backend: OcrBackendKind::Onnx,
                         model_version: "ppocr-v5-pdf".into(),
                         text,
-                        confidence: None,
+                        confidence: Some(outcome.confidence),
                     })?;
                     let status = if imp.deduped {
                         IngestStatus::Backfilled
@@ -222,8 +223,9 @@ pub fn ingest(vault: &Vault, path: &Path) -> anyhow::Result<IngestOutcome> {
         Err(_) => {
             // 无文本层(图片/扫描件):先尝试 OCR。
             match ocr::recognize(&bytes) {
-                Ok(text) if !text.trim().is_empty() => {
+                Ok(outcome) if !outcome.text.trim().is_empty() => {
                     // OCR 成功:像文本文档一样处理(分类/日期取自识别文本)
+                    let text = outcome.text;
                     let doc_type = parser::classify(&text);
                     let (doc_date, doc_date_end) = parser::guess_date_range(&text);
                     let doc = vault.add_document(NewDocument {
@@ -241,7 +243,7 @@ pub fn ingest(vault: &Vault, path: &Path) -> anyhow::Result<IngestOutcome> {
                         backend: OcrBackendKind::Onnx,
                         model_version: "ppocr-v5".into(),
                         text,
-                        confidence: None,
+                        confidence: Some(outcome.confidence),
                     })?;
                     let status = if imp.deduped {
                         IngestStatus::Backfilled

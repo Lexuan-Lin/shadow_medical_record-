@@ -1,10 +1,33 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, FileType2, ImageIcon, X, Maximize2, FileQuestion } from "lucide-react";
+import {
+  ArrowLeft,
+  FileType2,
+  ImageIcon,
+  X,
+  Maximize2,
+  FileQuestion,
+  AlertTriangle,
+} from "lucide-react";
 import { api } from "../api";
 import type { DocumentDetail } from "../types";
 import { TYPE_LABEL, TYPE_BADGE, TYPE_ICON, fmtDate, fmtBytes } from "../docmeta";
 import ReportContent from "./ReportContent";
 import DicomViewer from "./DicomViewer";
+
+// 低置信度阈值:低于此值提示扫描可能不清晰/不可用,建议重拍或核对原件。
+const LOW_CONFIDENCE_THRESHOLD = 0.6;
+// 高置信度阈值:达到此值展示为“可信”的低调绿色徽标。
+const HIGH_CONFIDENCE_THRESHOLD = 0.85;
+
+function confidenceBadgeClass(ratio: number): string {
+  if (ratio < LOW_CONFIDENCE_THRESHOLD) {
+    return "bg-amber-50 text-amber-700 border border-amber-200";
+  }
+  if (ratio >= HIGH_CONFIDENCE_THRESHOLD) {
+    return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+  }
+  return "bg-slate-100 text-slate-600 border border-slate-200";
+}
 
 // 内容(识别文本)为主,原件作为附件:缩略图/文件条,点击全屏查看。
 // OCR 已把内容读出来 → 阅读用文本,原图只在需要出示时全屏打开。
@@ -15,7 +38,7 @@ export default function DocumentView({
   detail: DocumentDetail;
   onBack: () => void;
 }) {
-  const { document: doc, source_file: sf, ocr_text } = detail;
+  const { document: doc, source_file: sf, ocr_text, ocr_confidence, ocr_backend } = detail;
   const [origUrl, setOrigUrl] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState(false);
   const [dicomBytes, setDicomBytes] = useState<Uint8Array | null>(null);
@@ -24,6 +47,12 @@ export default function DocumentView({
   const isDicom = sf.mime_type === "application/dicom";
   const showAsImage = isImage || isDicom; // 缩略图:DICOM 渲染成灰度 PNG,与图片同样呈现
   const hasOriginal = showAsImage || isPdf;
+
+  // 置信度只在真正走过 OCR(onnx/vlm)的文档上展示;native(文本层/DICOM 元数据)
+  // 没有识别置信度这回事,不显示。
+  const isOcrDocument = ocr_backend === "onnx" || ocr_backend === "vlm";
+  const confidencePct = ocr_confidence != null ? Math.round(ocr_confidence * 100) : null;
+  const isLowConfidence = isOcrDocument && ocr_confidence != null && ocr_confidence < LOW_CONFIDENCE_THRESHOLD;
 
   // 缩略图:DICOM 用后端渲染的静态 PNG(快),其他原样读取。
   useEffect(() => {
@@ -155,7 +184,7 @@ export default function DocumentView({
 
           {/* 识别文本 / 文档内容(主) */}
           <div>
-            <div className="text-[11px] font-mono text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+            <div className="text-[11px] font-mono text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5 flex-wrap">
               {hasOriginal ? (
                 <>
                   <ImageIcon className="w-3.5 h-3.5" /> 识别文本 · 可溯源
@@ -163,8 +192,26 @@ export default function DocumentView({
               ) : (
                 "文档内容 · 原文"
               )}
+              {isOcrDocument && confidencePct != null && (
+                <span
+                  className={`normal-case tracking-normal font-sans px-2 py-0.5 rounded-full text-[11px] font-medium ${confidenceBadgeClass(
+                    ocr_confidence as number
+                  )}`}
+                >
+                  识别置信度 {confidencePct}%
+                </span>
+              )}
             </div>
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+              {isLowConfidence && (
+                <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800">
+                  <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div className="text-sm leading-relaxed">
+                    识别置信度较低({confidencePct}%),扫描可能不清晰或不可用 ——
+                    建议重新拍摄,或以上方原件为准。
+                  </div>
+                </div>
+              )}
               {ocr_text.trim() ? (
                 <ReportContent text={ocr_text} docType={doc.doc_type} />
               ) : (

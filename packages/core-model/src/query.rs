@@ -393,6 +393,31 @@ impl Vault {
         }
         Ok(out)
     }
+
+    /// 文档的 OCR 置信度:取各页非空 confidence 的最小值(最保守 —— 有一页差就
+    /// 提示)。若所有页均无 confidence(如 native 文本层文档),返回 None。
+    pub fn ocr_confidence(&self, document_id: i64) -> Result<Option<f32>, MedmeError> {
+        let v: Option<f32> = self.conn().query_row(
+            "SELECT MIN(confidence) FROM ocr_result WHERE document_id = ?1 AND confidence IS NOT NULL",
+            [document_id],
+            |r| r.get(0),
+        )?;
+        Ok(v)
+    }
+
+    /// 文档的 OCR 后端(如 "onnx"/"native"/"vlm"):取该文档 ocr_result 的第一条
+    /// 记录(按 page_no)。无 ocr_result 行时返回 None。
+    pub fn ocr_backend(&self, document_id: i64) -> Result<Option<String>, MedmeError> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT backend FROM ocr_result WHERE document_id = ?1 ORDER BY page_no ASC LIMIT 1",
+                [document_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
 }
 
 #[cfg(test)]
@@ -510,6 +535,75 @@ mod tests {
         assert!(v.document_by_id(99999).unwrap().is_none());
         assert!(v.source_file_by_id(99999).unwrap().is_none());
         assert_eq!(v.ocr_text(99999).unwrap(), "");
+    }
+
+    #[test]
+    fn ocr_confidence_is_min_across_pages_and_backend_is_first_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let imp = v.import("scan.png", "image/png", b"fake-bytes").unwrap();
+        let doc = v
+            .add_document(NewDocument {
+                source_file_id: imp.source_file.id,
+                doc_type: DocType::LabReport,
+                doc_date: None,
+                doc_date_end: None,
+                title: Some("scan.png".into()),
+                language: None,
+                page_count: 2,
+            })
+            .unwrap();
+        v.add_ocr(NewOcr {
+            document_id: doc.id,
+            page_no: 1,
+            backend: OcrBackendKind::Onnx,
+            model_version: "ppocr-v5".into(),
+            text: "page one".into(),
+            confidence: Some(0.92),
+        })
+        .unwrap();
+        v.add_ocr(NewOcr {
+            document_id: doc.id,
+            page_no: 2,
+            backend: OcrBackendKind::Onnx,
+            model_version: "ppocr-v5".into(),
+            text: "page two, blurry".into(),
+            confidence: Some(0.41),
+        })
+        .unwrap();
+
+        // 最保守:取各页最小值,而非平均。
+        assert_eq!(v.ocr_confidence(doc.id).unwrap(), Some(0.41));
+        assert_eq!(v.ocr_backend(doc.id).unwrap(), Some("onnx".to_string()));
+
+        // 无 OCR 行(如 native/无文本层)→ None。
+        assert_eq!(v.ocr_confidence(99999).unwrap(), None);
+        assert_eq!(v.ocr_backend(99999).unwrap(), None);
+
+        // 全部 confidence 均为 NULL(如 native 文本层文档)→ None。
+        let imp2 = v.import("native.txt", "text/plain", b"hello").unwrap();
+        let doc2 = v
+            .add_document(NewDocument {
+                source_file_id: imp2.source_file.id,
+                doc_type: DocType::Unknown,
+                doc_date: None,
+                doc_date_end: None,
+                title: Some("native.txt".into()),
+                language: None,
+                page_count: 1,
+            })
+            .unwrap();
+        v.add_ocr(NewOcr {
+            document_id: doc2.id,
+            page_no: 1,
+            backend: OcrBackendKind::Native,
+            model_version: "text-layer".into(),
+            text: "hello".into(),
+            confidence: None,
+        })
+        .unwrap();
+        assert_eq!(v.ocr_confidence(doc2.id).unwrap(), None);
+        assert_eq!(v.ocr_backend(doc2.id).unwrap(), Some("native".to_string()));
     }
 
     #[test]

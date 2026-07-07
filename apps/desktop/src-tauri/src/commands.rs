@@ -93,10 +93,14 @@ pub fn get_document(state: State<AppState>, id: i64) -> Result<DocumentDetail, S
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "source_file missing".to_string())?;
     let text = v.ocr_text(id).map_err(|e| e.to_string())?;
+    let ocr_confidence = v.ocr_confidence(id).map_err(|e| e.to_string())?;
+    let ocr_backend = v.ocr_backend(id).map_err(|e| e.to_string())?;
     Ok(DocumentDetail {
         document: DocumentSummary::from(&doc),
         source_file: SourceFileMeta::from(&sf),
         ocr_text: text,
+        ocr_confidence,
+        ocr_backend,
     })
 }
 

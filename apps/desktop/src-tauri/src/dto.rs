@@ -54,6 +54,8 @@ pub struct DocumentDetail {
     pub document: DocumentSummary,
     pub source_file: SourceFileMeta,
     pub ocr_text: String,
+    pub ocr_confidence: Option<f32>,
+    pub ocr_backend: Option<String>,
 }
 
 #[derive(Serialize)]

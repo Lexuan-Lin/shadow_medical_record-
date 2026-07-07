@@ -14,6 +14,24 @@ use std::sync::OnceLock;
 
 static PIPELINE: OnceLock<OAROCR> = OnceLock::new();
 
+/// Result of an OCR recognition call: the recognized text plus a confidence
+/// score (mean of the recognized text lines' per-line confidences, `0..1`;
+/// `0.0` when no lines were recognized).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OcrOutcome {
+    pub text: String,
+    pub confidence: f32,
+}
+
+/// Mean of `Some` confidences, or `0.0` if there are none.
+fn mean_confidence(confidences: &[f32]) -> f32 {
+    if confidences.is_empty() {
+        0.0
+    } else {
+        confidences.iter().sum::<f32>() / confidences.len() as f32
+    }
+}
+
 fn pipeline() -> Result<&'static OAROCR> {
     if let Some(p) = PIPELINE.get() {
         return Ok(p);
@@ -29,9 +47,11 @@ fn pipeline() -> Result<&'static OAROCR> {
 }
 
 /// Recognize text in image bytes (png/jpg/tiff/...). Returns recognized text
-/// lines joined with "\n". Lazily builds the OCR pipeline on first call
-/// (models auto-download from ModelScope on first ever run on this machine).
-pub fn recognize(image_bytes: &[u8]) -> Result<String> {
+/// lines joined with "\n", plus a confidence score (mean of the recognized
+/// lines' per-line confidences; `0.0` if no lines were recognized). Lazily
+/// builds the OCR pipeline on first call (models auto-download from
+/// ModelScope on first ever run on this machine).
+pub fn recognize(image_bytes: &[u8]) -> Result<OcrOutcome> {
     let ocr = pipeline()?;
     let dynamic = image::load_from_memory(image_bytes).context("ocr::recognize: decode image")?;
     let image = dynamic_to_rgb(dynamic);
@@ -39,16 +59,23 @@ pub fn recognize(image_bytes: &[u8]) -> Result<String> {
         .predict(vec![image])
         .map_err(|e| anyhow::anyhow!("OCR prediction failed: {e}"))?;
     let mut lines = Vec::new();
+    let mut confidences = Vec::new();
     if let Some(result) = results.into_iter().next() {
         for region in result.text_regions {
             if let Some(text) = region.text {
                 if !text.trim().is_empty() {
                     lines.push(text);
+                    if let Some(c) = region.confidence {
+                        confidences.push(c);
+                    }
                 }
             }
         }
     }
-    Ok(lines.join("\n"))
+    Ok(OcrOutcome {
+        text: lines.join("\n"),
+        confidence: mean_confidence(&confidences),
+    })
 }
 
 /// OCR a PDF that has no text layer: extract each page's embedded image
@@ -64,14 +91,18 @@ pub fn recognize(image_bytes: &[u8]) -> Result<String> {
 /// page-by-page rather than failing the whole document.
 ///
 /// Returns an error if the PDF can't be parsed, or if no page yields any
-/// non-empty OCR text.
-pub fn recognize_pdf(pdf_bytes: &[u8]) -> Result<String> {
+/// non-empty OCR text. Confidence is the mean of all pages' line confidences.
+pub fn recognize_pdf(pdf_bytes: &[u8]) -> Result<OcrOutcome> {
     let doc = Document::load_mem(pdf_bytes).context("recognize_pdf: parse PDF")?;
     let mut page_texts = Vec::new();
+    let mut page_confidences = Vec::new();
     for (_page_num, page_id) in doc.get_pages() {
         for image_bytes in extract_dct_images(&doc, page_id) {
             match recognize(&image_bytes) {
-                Ok(text) if !text.trim().is_empty() => page_texts.push(text),
+                Ok(outcome) if !outcome.text.trim().is_empty() => {
+                    page_confidences.push(outcome.confidence);
+                    page_texts.push(outcome.text);
+                }
                 Ok(_) => {}
                 Err(e) => {
                     // One image failing OCR shouldn't sink the other pages.
@@ -83,7 +114,10 @@ pub fn recognize_pdf(pdf_bytes: &[u8]) -> Result<String> {
     if page_texts.is_empty() {
         anyhow::bail!("recognize_pdf: no OCR-able (DCTDecode) page images found in PDF");
     }
-    Ok(page_texts.join("\n"))
+    Ok(OcrOutcome {
+        text: page_texts.join("\n"),
+        confidence: mean_confidence(&page_confidences),
+    })
 }
 
 /// Collect raw JPEG bytes for every `DCTDecode` image XObject directly
@@ -123,6 +157,16 @@ fn extract_dct_images(doc: &Document, page_id: lopdf::ObjectId) -> Vec<Vec<u8>> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn mean_confidence_of_empty_is_zero() {
+        assert_eq!(mean_confidence(&[]), 0.0);
+    }
+
+    #[test]
+    fn mean_confidence_averages_values() {
+        assert_eq!(mean_confidence(&[0.8, 0.6, 1.0]), (0.8 + 0.6 + 1.0f32) / 3.0);
+    }
+
     /// Requires network access to ModelScope on first run (models are cached
     /// afterward in $OAR_HOME). Run explicitly with:
     ///   cargo test -p ocr -- --ignored
@@ -131,10 +175,16 @@ mod tests {
     fn recognizes_cjk_test_image() {
         let bytes = std::fs::read("/tmp/ocr_test.png")
             .expect("generate /tmp/ocr_test.png first (see feat-ocr-report.md)");
-        let text = recognize(&bytes).expect("OCR should succeed");
+        let outcome = recognize(&bytes).expect("OCR should succeed");
         assert!(
-            text.contains("Creatinine") || text.contains("肌酐"),
-            "unexpected OCR text: {text}"
+            outcome.text.contains("Creatinine") || outcome.text.contains("肌酐"),
+            "unexpected OCR text: {}",
+            outcome.text
+        );
+        assert!(
+            outcome.confidence > 0.0,
+            "expected non-zero confidence, got {}",
+            outcome.confidence
         );
     }
 
@@ -149,11 +199,21 @@ mod tests {
             "/../../examples/demo-dataset/photos/2026-03-15_检验报告_扫描图PDF.pdf"
         );
         let bytes = std::fs::read(path).expect("demo scanned PDF present");
-        let text = recognize_pdf(&bytes).expect("recognize_pdf should succeed");
+        let outcome = recognize_pdf(&bytes).expect("recognize_pdf should succeed");
         assert!(
-            text.contains("肌酐") || text.contains("Creatinine"),
-            "unexpected OCR text: {text}"
+            outcome.text.contains("肌酐") || outcome.text.contains("Creatinine"),
+            "unexpected OCR text: {}",
+            outcome.text
         );
-        assert!(text.contains("2026-03-15"), "expected date in OCR text: {text}");
+        assert!(
+            outcome.text.contains("2026-03-15"),
+            "expected date in OCR text: {}",
+            outcome.text
+        );
+        assert!(
+            outcome.confidence > 0.0,
+            "expected non-zero confidence, got {}",
+            outcome.confidence
+        );
     }
 }

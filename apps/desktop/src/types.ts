@@ -21,6 +21,8 @@ export interface DocumentDetail {
   document: DocumentSummary;
   source_file: SourceFileMeta;
   ocr_text: string;
+  ocr_confidence: number | null;
+  ocr_backend: string | null;
 }
 export interface ImportOutcome {
   name: string;
