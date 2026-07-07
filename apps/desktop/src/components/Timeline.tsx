@@ -179,18 +179,25 @@ export default function Timeline({
             {total} 份 · {visits} 次就诊
           </span>
         </h1>
-        {groups.map((g) =>
-          g.group_type === "encounter" ? (
+        {groups.map((g) => {
+          if (g.group_type === "document") {
+            return <DocCard key={`d${g.doc.id}`} d={g.doc} onSelect={onSelect} />;
+          }
+          // 单文档就诊 → 直接显示那份文档(别用折叠组把真报告藏起来);
+          // 只有多文档就诊(住院等)才折叠成可展开的就诊卡。
+          if (g.docs.length <= 1) {
+            const d = g.docs[0];
+            return d ? <DocCard key={`e1${g.encounter.id}`} d={d} onSelect={onSelect} /> : null;
+          }
+          return (
             <EncounterCard
               key={`e${g.encounter.id}`}
               enc={g.encounter}
               docs={g.docs}
               onSelect={onSelect}
             />
-          ) : (
-            <DocCard key={`d${g.doc.id}`} d={g.doc} onSelect={onSelect} />
-          ),
-        )}
+          );
+        })}
       </div>
     </div>
   );
