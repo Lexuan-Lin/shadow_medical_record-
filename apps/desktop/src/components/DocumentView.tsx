@@ -166,7 +166,7 @@ export default function DocumentView({
             </div>
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
               {ocr_text.trim() ? (
-                <ReportContent text={ocr_text} />
+                <ReportContent text={ocr_text} docType={doc.doc_type} />
               ) : (
                 <div className="text-slate-400 text-sm leading-relaxed">
                   此文件尚未识别出文字。原始文件已完整保存(见上方附件),可直接出示给医生。

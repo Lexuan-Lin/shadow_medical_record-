@@ -6,6 +6,7 @@ import Timeline from "./components/Timeline";
 import DocumentView from "./components/DocumentView";
 import ImportView from "./components/ImportView";
 import SearchView from "./components/SearchView";
+import AboutView from "./components/AboutView";
 import { api } from "./api";
 import type { TimelineGroup, DocumentDetail } from "./types";
 import "./App.css";
@@ -74,6 +75,8 @@ export default function App() {
             <ImportView onImported={afterImport} />
           ) : tab === "search" ? (
             <SearchView onSelect={openDoc} />
+          ) : tab === "about" ? (
+            <AboutView />
           ) : (
             <Timeline groups={groups} onSelect={openDoc} />
           )}

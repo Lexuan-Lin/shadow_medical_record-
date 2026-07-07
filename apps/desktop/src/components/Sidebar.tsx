@@ -6,6 +6,7 @@ import {
   Search,
   PanelLeftClose,
   PanelLeftOpen,
+  Info,
 } from "lucide-react";
 
 const NAV = [
@@ -103,6 +104,20 @@ export default function Sidebar({
 
       {/* Collapse toggle + footer */}
       <div className="p-2 border-t border-slate-200">
+        <button
+          onClick={() => onNav("about")}
+          title={collapsed ? "关于 · 声明" : undefined}
+          className={`w-full flex items-center ${
+            collapsed ? "justify-center" : "gap-2"
+          } p-2.5 rounded-xl cursor-pointer transition-colors ${
+            activeTab === "about"
+              ? "bg-blue-50 text-blue-700"
+              : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+          }`}
+        >
+          <Info className="w-5 h-5 shrink-0" />
+          {!collapsed && <span className="text-xs font-medium">关于 · 声明</span>}
+        </button>
         <button
           onClick={() => setCollapsed((c) => !c)}
           title={collapsed ? "展开" : "收起"}
