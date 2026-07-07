@@ -2,6 +2,44 @@ use core_model::{DocType, NewDocument, NewOcr, OcrBackendKind, Vault};
 use std::collections::HashMap;
 use std::path::Path;
 
+fn is_pdf(path: &Path) -> bool {
+    mime_for(path) == "application/pdf"
+}
+
+/// 按文本层(txt / 已抽取文本的 PDF)建 document + ocr_result(Native 后端)。
+fn add_text_layer_document(
+    vault: &Vault,
+    sid: i64,
+    name: &str,
+    e: parser::Extracted,
+    deduped: bool,
+) -> anyhow::Result<IngestOutcome> {
+    let doc = vault.add_document(NewDocument {
+        source_file_id: sid,
+        doc_type: e.doc_type.clone(),
+        doc_date: e.doc_date,
+        doc_date_end: e.doc_date_end,
+        title: Some(name.to_string()),
+        language: e.language,
+        page_count: e.page_count,
+    })?;
+    vault.add_ocr(NewOcr {
+        document_id: doc.id,
+        page_no: 1,
+        backend: OcrBackendKind::Native,
+        model_version: "text-layer".into(),
+        text: e.text,
+        confidence: None,
+    })?;
+    let status = if deduped { IngestStatus::Backfilled } else { IngestStatus::New };
+    Ok(IngestOutcome {
+        source_file_id: sid,
+        name: name.to_string(),
+        status,
+        doc_type: Some(doc.doc_type),
+    })
+}
+
 pub fn mime_for(path: &Path) -> &'static str {
     match path
         .extension()
@@ -56,37 +94,46 @@ pub fn ingest(vault: &Vault, path: &Path) -> anyhow::Result<IngestOutcome> {
         });
     }
 
+    // 无文本层的判定阈值:去空白后 < 20 字符视为"实际没有文本层"(扫描图 PDF 常见,
+    // pdf-extract 对纯图片页返回空/近空字符串,不报错)。
+    const MIN_TEXT_LAYER_LEN: usize = 20;
+
     match parser::extract(path) {
-        Ok(e) => {
-            let doc = vault.add_document(NewDocument {
-                source_file_id: sid,
-                doc_type: e.doc_type.clone(),
-                doc_date: e.doc_date,
-                doc_date_end: e.doc_date_end,
-                title: Some(name.clone()),
-                language: e.language,
-                page_count: e.page_count,
-            })?;
-            vault.add_ocr(NewOcr {
-                document_id: doc.id,
-                page_no: 1,
-                backend: OcrBackendKind::Native,
-                model_version: "text-layer".into(),
-                text: e.text,
-                confidence: None,
-            })?;
-            let status = if imp.deduped {
-                IngestStatus::Backfilled
-            } else {
-                IngestStatus::New
-            };
-            Ok(IngestOutcome {
-                source_file_id: sid,
-                name,
-                status,
-                doc_type: Some(doc.doc_type),
-            })
+        Ok(e) if is_pdf(path) && e.text.trim().len() < MIN_TEXT_LAYER_LEN => {
+            // 扫描图 PDF(无文本层):尝试从页面图片 OCR 补文本,像图片一样处理。
+            match ocr::recognize_pdf(&bytes) {
+                Ok(text) if !text.trim().is_empty() => {
+                    let doc_type = parser::classify(&text);
+                    let (doc_date, doc_date_end) = parser::guess_date_range(&text);
+                    let doc = vault.add_document(NewDocument {
+                        source_file_id: sid,
+                        doc_type: doc_type.clone(),
+                        doc_date,
+                        doc_date_end,
+                        title: Some(name.clone()),
+                        language: parser::detect_language(&text),
+                        page_count: e.page_count,
+                    })?;
+                    vault.add_ocr(NewOcr {
+                        document_id: doc.id,
+                        page_no: 1,
+                        backend: OcrBackendKind::Onnx,
+                        model_version: "ppocr-v5-pdf".into(),
+                        text,
+                        confidence: None,
+                    })?;
+                    let status = if imp.deduped {
+                        IngestStatus::Backfilled
+                    } else {
+                        IngestStatus::New
+                    };
+                    Ok(IngestOutcome { source_file_id: sid, name, status, doc_type: Some(doc_type) })
+                }
+                // OCR 失败/空:退回原有行为 —— 按抽取到的(近空)文本层建 document。
+                _ => add_text_layer_document(vault, sid, &name, e, imp.deduped),
+            }
         }
+        Ok(e) => add_text_layer_document(vault, sid, &name, e, imp.deduped),
         Err(_) => {
             // 无文本层(图片/扫描件):先尝试 OCR。
             match ocr::recognize(&bytes) {
@@ -225,6 +272,28 @@ mod tests {
         assert_eq!(tl[0].doc_date.unwrap().format("%Y-%m-%d").to_string(), "2025-09-01");
         // 无 OCR 文本
         assert_eq!(v.ocr_text(tl[0].document_id).unwrap(), "");
+    }
+
+    /// 扫描图 PDF(无文本层):应通过 recognize_pdf 补 OCR 文本,分类/日期取自
+    /// 识别文本,而非退回文件名。需要 OCR 模型(联网首次下载,之后缓存)。
+    ///   cargo test -p pipeline -- --ignored
+    #[test]
+    #[ignore]
+    fn ingest_scanned_pdf_ocrs_and_dates() {
+        let vdir = tempfile::tempdir().unwrap();
+        let v = Vault::open(vdir.path()).unwrap();
+        let p = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/demo-dataset/photos/2026-03-15_检验报告_扫描图PDF.pdf"
+        ));
+        let o = ingest(&v, p).unwrap();
+        assert_eq!(o.status, IngestStatus::New);
+        assert_eq!(o.doc_type, Some(core_model::DocType::LabReport));
+        let tl = v.timeline().unwrap();
+        assert_eq!(tl.len(), 1);
+        assert_eq!(tl[0].doc_date.unwrap().format("%Y-%m-%d").to_string(), "2026-03-15");
+        let text = v.ocr_text(tl[0].document_id).unwrap();
+        assert!(text.contains("肌酐") || text.contains("Creatinine"), "unexpected OCR text: {text}");
     }
 
     #[test]
