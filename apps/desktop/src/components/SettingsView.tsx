@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { Settings as SettingsIcon, FolderOpen, Inbox, UploadCloud, Info, CloudCog } from "lucide-react";
+import {
+  Settings as SettingsIcon,
+  FolderOpen,
+  Inbox,
+  UploadCloud,
+  Info,
+  CloudCog,
+  Lock,
+} from "lucide-react";
 import { api } from "../api";
 
 export default function SettingsView({ onNav }: { onNav: (id: string) => void }) {
@@ -59,6 +67,40 @@ export default function SettingsView({ onNav }: { onNav: (id: string) => void })
           </div>
         </div>
 
+        {/* 数据安全:引导用系统级端到端加密(零口令、老人无感);app 层口令加密留后续版本 */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+          <div className="flex items-center gap-2 text-slate-800 font-medium mb-2">
+            <Lock className="w-5 h-5 text-blue-500" /> 数据安全 · 加密
+          </div>
+          <div className="text-sm text-slate-500 leading-relaxed mb-3">
+            病历默认存在本机。想要更强保护(尤其把保险箱放到云盘同步时),开启系统级端到端加密即可,
+            <b className="text-slate-700">无需在本 app 记任何口令</b>,一次设置、家人可代劳:
+          </div>
+          <ol className="space-y-2.5 text-sm text-slate-600 leading-relaxed list-none">
+            <li className="flex gap-2.5">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center">
+                1
+              </span>
+              <span>
+                开启 <b className="text-slate-800">Mac FileVault</b>(全盘加密):系统设置 › 隐私与安全性 ›
+                FileVault › 打开。本机数据即加密存储。
+              </span>
+            </li>
+            <li className="flex gap-2.5">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center">
+                2
+              </span>
+              <span>
+                开启 <b className="text-slate-800">iCloud 高级数据保护</b>(端到端,苹果也读不了):系统设置 ›
+                [你的名字] › iCloud › 高级数据保护 › 打开。云端同步的数据即端到端加密。
+              </span>
+            </li>
+          </ol>
+          <div className="mt-3 text-xs text-slate-400 leading-relaxed">
+            两者一起 = 本机 + 云端都端到端加密。app 内置的口令加密(适配 iCloud 之外的第三方云)将在后续版本提供。
+          </div>
+        </div>
+
         {/* 自动收件箱 */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
           <div className="flex items-center gap-2 text-slate-800 font-medium mb-2">
@@ -111,7 +153,7 @@ export default function SettingsView({ onNav }: { onNav: (id: string) => void })
           </div>
         </div>
 
-        <div className="text-xs font-mono text-slate-400 text-center">版本 v0.1</div>
+        <div className="text-xs font-mono text-slate-400 text-center">版本 v1.0</div>
       </div>
     </div>
   );

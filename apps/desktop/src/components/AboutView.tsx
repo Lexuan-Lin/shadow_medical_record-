@@ -143,7 +143,7 @@ export default function AboutView({ onNav }: { onNav: (id: string) => void }) {
             className="cursor-default select-none"
             title=""
           >
-            v0.1
+            v1.0
           </span>
         </div>
       </div>

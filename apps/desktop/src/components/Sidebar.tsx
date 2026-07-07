@@ -148,7 +148,7 @@ export default function Sidebar({
         {!collapsed && (
           <div className="px-2 pt-2 text-[10px] font-mono text-slate-400 flex justify-between">
             <span>© MedMe 2026</span>
-            <span>v0.1</span>
+            <span>v1.0</span>
           </div>
         )}
       </div>
