@@ -1,5 +1,6 @@
 mod commands;
 mod dto;
+mod export;
 mod inbox;
 
 use commands::AppState;
@@ -11,6 +12,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
@@ -42,10 +44,12 @@ pub fn run() {
             commands::read_source_bytes,
             commands::render_dicom,
             commands::export_vault,
+            commands::export_timeline_html,
             commands::get_patient_profile,
             commands::get_inbox_path,
             commands::set_inbox_path,
             commands::open_inbox,
+            commands::open_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

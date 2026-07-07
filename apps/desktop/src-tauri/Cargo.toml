@@ -26,6 +26,9 @@ core-model = { path = "../../../packages/core-model" }
 pipeline = { path = "../../../packages/pipeline" }
 dicom = { path = "../../../packages/dicom" }
 notify = "8.2.0"
+tauri-plugin-dialog = "2.7.1"
+base64 = "0.22"
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

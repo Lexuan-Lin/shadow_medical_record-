@@ -18,8 +18,11 @@ export const api = {  listTimelineGrouped: () => invoke<TimelineGroup[]>("list_t
   renderDicom: (id: number) => invoke<number[]>("render_dicom", { id }),
   exportVault: (destPath: string) =>
     invoke<ExportSummary>("export_vault", { destPath }),
+  exportTimelineHtml: (destPath: string) =>
+    invoke<ExportSummary>("export_timeline_html", { destPath }),
   getPatientProfile: () => invoke<PatientProfile>("get_patient_profile"),
   getInboxPath: () => invoke<string>("get_inbox_path"),
   setInboxPath: (path: string) => invoke<void>("set_inbox_path", { path }),
   openInbox: () => invoke<void>("open_inbox"),
+  openPath: (path: string) => invoke<void>("open_path", { path }),
 };

@@ -148,6 +148,24 @@ pub fn export_vault(_state: State<AppState>, _dest_path: String) -> Result<Expor
     })
 }
 
+/// 导出 v1:把整条时间线渲染成自包含 HTML 写到 `dest_path`(见
+/// `crate::export::build_timeline_html`)。可在任意浏览器打开、原生渲染中文,
+/// 并通过浏览器「打印 / 另存为 PDF」交给医生。
+#[tauri::command]
+pub fn export_timeline_html(
+    state: State<AppState>,
+    dest_path: String,
+) -> Result<ExportSummary, String> {
+    let v = lock(&state)?;
+    let (html, record_count) = crate::export::build_timeline_html(&v)?;
+    let byte_size = html.len() as i64;
+    std::fs::write(&dest_path, html).map_err(|e| e.to_string())?;
+    Ok(ExportSummary {
+        file_count: record_count,
+        byte_size,
+    })
+}
+
 #[tauri::command]
 pub fn get_patient_profile(state: State<AppState>) -> Result<PatientProfile, String> {
     let v = lock(&state)?;
@@ -183,4 +201,10 @@ pub fn open_inbox(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_path(inbox.to_string_lossy().to_string(), None::<String>)
         .map_err(|e| e.to_string())
+}
+
+/// 用系统默认程序打开任意文件/目录 —— 用于导出完成后一键在浏览器打开导出的 HTML。
+#[tauri::command]
+pub fn open_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    app.opener().open_path(path, None::<String>).map_err(|e| e.to_string())
 }
