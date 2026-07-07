@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   ShieldCheck,
@@ -8,14 +7,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Info,
-  Download,
 } from "lucide-react";
-import { api } from "../api";
 
 const NAV = [
   { id: "timeline", label: "生命时间线", sub: "Medical Lifeline", icon: Activity },
   { id: "search", label: "搜索", sub: "Search", icon: Search },
-  { id: "import", label: "导入病历", sub: "Import Records", icon: UploadCloud },
+  { id: "import", label: "导入 · 导出", sub: "Import · Export", icon: UploadCloud },
 ];
 
 export default function Sidebar({
@@ -28,39 +25,6 @@ export default function Sidebar({
   count: number;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [exportMsg, setExportMsg] = useState<
-    { kind: "ok"; text: string; path: string } | { kind: "err"; text: string } | null
-  >(null);
-
-  // 导出 v1:选保存路径 → 生成自包含 HTML → 提示可打印/另存为 PDF 交给医生。
-  const doExport = async () => {
-    let path: string | null;
-    try {
-      path = await save({
-        defaultPath: "MedMe导出.html",
-        filters: [{ name: "HTML", extensions: ["html"] }],
-      });
-    } catch (e) {
-      setExportMsg({ kind: "err", text: `选择保存位置失败:${String(e)}` });
-      return;
-    }
-    if (!path) return; // 用户取消
-    setExporting(true);
-    setExportMsg(null);
-    try {
-      const summary = await api.exportTimelineHtml(path);
-      setExportMsg({
-        kind: "ok",
-        text: `已导出 ${summary.file_count} 份记录到 ${path},可在浏览器打开后「打印 / 另存为 PDF」交给医生。`,
-        path,
-      });
-    } catch (e) {
-      setExportMsg({ kind: "err", text: `导出失败:${String(e)}` });
-    } finally {
-      setExporting(false);
-    }
-  };
 
   return (
     <div
@@ -138,44 +102,8 @@ export default function Sidebar({
         })}
       </nav>
 
-      {/* Collapse toggle + footer */}
+      {/* Footer */}
       <div className="p-2 border-t border-slate-200">
-        <button
-          onClick={doExport}
-          disabled={exporting}
-          title={collapsed ? "导出为可打印 HTML" : undefined}
-          className={`w-full flex items-center ${
-            collapsed ? "justify-center" : "gap-2"
-          } p-2.5 rounded-xl cursor-pointer transition-colors text-slate-400 hover:bg-slate-50 hover:text-slate-600 disabled:opacity-50 disabled:cursor-wait`}
-        >
-          <Download className="w-5 h-5 shrink-0" />
-          {!collapsed && (
-            <span className="text-xs font-medium">{exporting ? "导出中…" : "导出"}</span>
-          )}
-        </button>
-        {!collapsed && exportMsg && (
-          <div
-            className={`mt-1 mb-1 rounded-xl px-2.5 py-2 text-[11px] leading-relaxed break-all ${
-              exportMsg.kind === "ok"
-                ? "bg-emerald-50 text-emerald-700"
-                : "bg-rose-50 text-rose-700"
-            }`}
-          >
-            <div>{exportMsg.text}</div>
-            {exportMsg.kind === "ok" && (
-              <button
-                onClick={() =>
-                  api
-                    .openPath(exportMsg.path)
-                    .catch((e) => setExportMsg({ kind: "err", text: `打开失败:${String(e)}` }))
-                }
-                className="mt-1 font-medium text-blue-700 hover:underline cursor-pointer"
-              >
-                打开文件
-              </button>
-            )}
-          </div>
-        )}
         <button
           onClick={() => onNav("about")}
           title={collapsed ? "关于 · 声明" : undefined}

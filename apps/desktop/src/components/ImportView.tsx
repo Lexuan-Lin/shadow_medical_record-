@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { UploadCloud, ScanLine, FolderOpen, Inbox } from "lucide-react";
+import { UploadCloud, ScanLine, FolderOpen, Inbox, Download, FileDown } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { ImportOutcome } from "../types";
 
@@ -17,10 +18,43 @@ export default function ImportView({ onImported }: { onImported: () => void }) {
   const [results, setResults] = useState<ImportOutcome[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [inboxPath, setInboxPath] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<
+    { kind: "ok"; text: string; path: string } | { kind: "err"; text: string } | null
+  >(null);
 
   useEffect(() => {
     api.getInboxPath().then(setInboxPath).catch(() => {});
   }, []);
+
+  // 导出 v1:选保存路径 → 生成自包含 HTML → 浏览器可「打印 / 另存为 PDF」交给医生。
+  const doExport = async () => {
+    let path: string | null;
+    try {
+      path = await save({
+        defaultPath: "MedMe导出.html",
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      });
+    } catch (e) {
+      setExportMsg({ kind: "err", text: `选择保存位置失败:${String(e)}` });
+      return;
+    }
+    if (!path) return;
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const summary = await api.exportTimelineHtml(path);
+      setExportMsg({
+        kind: "ok",
+        text: `已导出 ${summary.file_count} 份记录,可在浏览器打开后「打印 / 另存为 PDF」交给医生。`,
+        path,
+      });
+    } catch (e) {
+      setExportMsg({ kind: "err", text: `导出失败:${String(e)}` });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -63,8 +97,8 @@ export default function ImportView({ onImported }: { onImported: () => void }) {
     <div className="flex-1 overflow-y-auto bg-slate-50 p-6 md:p-10">
       <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl font-bold text-slate-900 mb-6">
-          导入病历
-          <span className="ml-2 text-sm font-mono text-slate-500">Import Records</span>
+          导入 · 导出
+          <span className="ml-2 text-sm font-mono text-slate-500">Import · Export</span>
         </h1>
 
         <div
@@ -132,6 +166,48 @@ export default function ImportView({ onImported }: { onImported: () => void }) {
               </span>
             </li>
           </ul>
+        </div>
+
+        {/* 导出(与导入同区,功能分开):全量时间线 → 自包含 HTML,浏览器打印/另存 PDF 交给医生 */}
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-5">
+          <div className="flex items-center gap-2 text-slate-800 font-medium mb-2">
+            <FileDown className="w-5 h-5 text-blue-500" /> 导出给医生
+          </div>
+          <div className="text-sm text-slate-500 leading-relaxed mb-3">
+            把全部病历按时间导出为一个自包含 HTML 文件,任意浏览器可打开、原生中文显示,
+            再「打印 / 另存为 PDF」交给医生或用于报销。
+          </div>
+          <button
+            type="button"
+            onClick={doExport}
+            disabled={exporting}
+            className="flex items-center gap-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait rounded-xl px-4 py-2.5 transition-colors cursor-pointer"
+          >
+            <Download className="w-4 h-4" /> {exporting ? "导出中…" : "导出全部病历"}
+          </button>
+          {exportMsg && (
+            <div
+              className={`mt-3 rounded-xl px-4 py-2.5 text-sm leading-relaxed break-all ${
+                exportMsg.kind === "ok"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-rose-50 text-rose-700"
+              }`}
+            >
+              <div>{exportMsg.text}</div>
+              {exportMsg.kind === "ok" && (
+                <button
+                  onClick={() =>
+                    api
+                      .openPath(exportMsg.path)
+                      .catch((e) => setExportMsg({ kind: "err", text: `打开失败:${String(e)}` }))
+                  }
+                  className="mt-1 font-medium text-blue-700 hover:underline cursor-pointer"
+                >
+                  打开文件
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {error && <div className="mt-4 text-sm text-rose-600">导入失败:{error}</div>}
