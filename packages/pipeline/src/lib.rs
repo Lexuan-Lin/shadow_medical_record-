@@ -87,12 +87,23 @@ pub fn ingest(vault: &Vault, path: &Path) -> anyhow::Result<IngestOutcome> {
                 doc_type: Some(doc.doc_type),
             })
         }
-        Err(_) => Ok(IngestOutcome {
-            source_file_id: sid,
-            name,
-            status: IngestStatus::StoredNoText,
-            doc_type: None,
-        }),
+        Err(_) => {
+            // 无文本层(图片/扫描件):仍建 document,用文件名推断类型/日期,
+            // 使其在时间线可见、可查看原件;文字由后续 OCR(Plan B)补齐。
+            let (doc_date, doc_date_end) = parser::guess_date_range(&name);
+            let doc_type = parser::classify(&name);
+            vault.add_document(NewDocument {
+                source_file_id: sid,
+                doc_type: doc_type.clone(),
+                doc_date,
+                doc_date_end,
+                title: Some(name.clone()),
+                language: None,
+                page_count: 1,
+            })?;
+            // 不建 ocr_result(暂无文本)
+            Ok(IngestOutcome { source_file_id: sid, name, status: IngestStatus::StoredNoText, doc_type: Some(doc_type) })
+        }
     }
 }
 
@@ -163,18 +174,24 @@ mod tests {
     }
 
     #[test]
-    fn ingest_stored_no_text_for_unsupported() {
+    fn ingest_no_text_still_creates_visible_document() {
         let vdir = tempfile::tempdir().unwrap();
         let fdir = tempfile::tempdir().unwrap();
         let v = Vault::open(vdir.path()).unwrap();
-        // .bin 扩展名 → parser::extract 报错 → StoredNoText,但文件已入 CAS
-        let p = fdir.path().join("scan.bin");
-        std::fs::write(&p, b"\x00\x01\x02rawbytes").unwrap();
+        // 文件名带日期+影像关键词;内容无文本层(.png 扩展名 → parser 报错)
+        let p = fdir.path().join("2025-09-01_胸部X线_扫描件.png");
+        std::fs::write(&p, b"\x89PNG\r\n\x1a\nnot-a-real-image").unwrap();
 
         let o = ingest(&v, &p).unwrap();
         assert_eq!(o.status, IngestStatus::StoredNoText);
-        assert!(!v.has_document(o.source_file_id).unwrap()); // 没建 document
-        assert_eq!(v.timeline().unwrap().len(), 0);
+        // 现在建了 document → 时间线可见,类型/日期取自文件名
+        assert!(v.has_document(o.source_file_id).unwrap());
+        let tl = v.timeline().unwrap();
+        assert_eq!(tl.len(), 1);
+        assert_eq!(tl[0].doc_type, core_model::DocType::ImagingReport);
+        assert_eq!(tl[0].doc_date.unwrap().format("%Y-%m-%d").to_string(), "2025-09-01");
+        // 无 OCR 文本
+        assert_eq!(v.ocr_text(tl[0].document_id).unwrap(), "");
     }
 
     #[test]

@@ -139,7 +139,8 @@ pub fn classify(text: &str) -> DocType {
         DocType::LabReport
     } else if has("影像") || has("超声") || has("ultrasound") || has("imaging")
         || has("radiolog") || has("computed tomograph") || has("magnetic resonance")
-        || word("ct") || word("mri") || word("xray") || has("x-ray") {
+        || word("ct") || word("mri") || word("xray") || has("x-ray")
+        || has("x线") || has("心电") || has("dr ") || has("拍片") {
         DocType::ImagingReport
     } else if has("病理") || has("pathology") {
         DocType::Pathology
@@ -207,6 +208,14 @@ mod tests {
         assert_eq!(classify("chest CT scan report\nnodule"), DocType::ImagingReport);
         // 整词边界:不因 "doctor"(含 ct)/"available"(含 lab) 误判为影像/化验
         assert_eq!(classify("The doctor saw the patient; results available."), DocType::Unknown);
+    }
+
+    #[test]
+    fn classify_chinese_imaging_keywords() {
+        assert_eq!(classify("胸部X线正位片"), DocType::ImagingReport);
+        assert_eq!(classify("心电图检查报告"), DocType::ImagingReport);
+        assert_eq!(classify("DR 检查:胸部"), DocType::ImagingReport);
+        assert_eq!(classify("患者今日拍片复查"), DocType::ImagingReport);
     }
 
     #[test]
