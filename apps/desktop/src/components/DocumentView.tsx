@@ -227,7 +227,7 @@ export default function DocumentView({
       {/* 全屏查看 lightbox */}
       {lightbox && (isDicom || origUrl) && (
         <div className="fixed inset-0 z-50 bg-black/85 flex flex-col" onClick={() => setLightbox(false)}>
-          <div className="flex justify-between items-center px-5 py-3 text-white/90 shrink-0">
+          <div className="relative z-10 flex justify-between items-center px-5 py-3 text-white/90 shrink-0">
             <span className="text-sm font-mono truncate">{sf.original_name}</span>
             <button
               onClick={() => setLightbox(false)}

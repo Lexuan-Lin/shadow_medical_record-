@@ -89,7 +89,7 @@ export default function DicomViewer({
       className="flex flex-col h-full w-full"
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center gap-2 px-3 py-2 shrink-0 flex-wrap">
+      <div className="relative z-10 flex items-center gap-2 px-3 py-2 shrink-0 flex-wrap bg-black/60">
         {TOOLS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -116,7 +116,7 @@ export default function DicomViewer({
       </div>
       <div
         id={containerId}
-        className="flex-1 min-h-0 relative bg-black"
+        className="flex-1 min-h-0 relative bg-black overflow-hidden"
         style={{ touchAction: "none" }}
       />
     </div>
