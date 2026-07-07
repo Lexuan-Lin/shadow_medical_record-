@@ -75,6 +75,24 @@
   .road .tag.done{background:#dcfce7;color:#166534} .road .tag.next{background:var(--blue-50);color:#1e40af}
   .road .tag.later{background:#f1f5f9;color:#475569}
   .road .row div p{color:var(--muted);font-size:14px;margin-top:2px}
+  /* team */
+  .team-intro{color:var(--muted);text-align:center;max-width:640px;margin:0 auto 40px;font-size:16px}
+  .team{display:grid;grid-template-columns:repeat(2,1fr);gap:22px;max-width:840px;margin:0 auto}
+  .member{background:#fff;border:1px solid var(--line);border-radius:18px;padding:30px 26px;text-align:center}
+  section.alt .member{background:var(--bg)}
+  .member .avatar{width:96px;height:96px;border-radius:50%;overflow:hidden;margin:0 auto 16px;
+    background:var(--blue-50);border:1px solid #dbeafe;display:flex;align-items:center;justify-content:center;color:#93c5fd}
+  .member .avatar img{width:100%;height:100%;object-fit:cover}
+  .member .avatar svg{width:46px;height:46px}
+  .member h3{font-size:18px;margin-bottom:4px}
+  .member .role{font-size:13px;color:var(--blue);font-weight:600;margin-bottom:12px}
+  .member p{color:var(--muted);font-size:14px;margin-bottom:16px;min-height:42px}
+  .member .links{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+  .member .links a{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);font-weight:500}
+  .member .links a:hover{color:var(--blue)}
+  .member .links svg{width:15px;height:15px}
+  .todo{color:#b45309;background:#fffbeb;border:1px dashed #fcd34d;font-size:12px;
+    border-radius:8px;padding:2px 8px;display:inline-block;margin-top:6px}
   /* footer */
   footer{background:#0f172a;color:#cbd5e1;padding:44px 0;text-align:center;font-size:14px}
   footer .disc{max-width:720px;margin:0 auto 16px;color:#94a3b8;font-size:13px;line-height:1.8}
@@ -182,6 +200,47 @@
       <div class="row"><span class="tag done">v1.0 已交付</span><div><b>桌面端</b><p>采集/OCR · 生命时间线 · 富渲染 · DICOM 阅片 · 端到端加密分享 · 审计追踪 · 数据安全引导</p></div></div>
       <div class="row"><span class="tag next">v1.1 进行中</span><div><b>手机 App(采集为主)</b><p>与桌面共享 Rust 内核与存储,通过云盘保险箱自然同步;导出按时间范围选择</p></div></div>
       <div class="row"><span class="tag later">后续</span><div><b>更强能力</b><p>可选口令加密(适配第三方云) · 分享短信验证 / 可撤销 · FHIR/OMOP 导出 · 自愿匿名的群体数据贡献</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>我们是谁</h2>
+    <p class="team-intro">健康数据事关信任。我们把团队摆在明处——真实的人、真实的背景、可查证的身份。</p>
+    <div class="team">
+
+      <!-- 成员 1:项目创始人(你) -->
+      <div class="member">
+        <div class="avatar">
+          <!-- 待替换为 GitHub 头像:<img src="https://github.com/你的用户名.png" alt=""> -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <h3>【你的姓名】</h3>
+        <div class="role">创始人 · 工程与研究</div>
+        <p>【一句话简介:研究方向 / 所在机构,例如 University of Florida,数据科学 / 健康信息学】</p>
+        <div class="links">
+          <a href="#" title="GitHub"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg> GitHub</a>
+          <a href="#" title="LinkedIn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14zM8.34 17V10.4H6.16V17h2.18zM7.25 9.5a1.26 1.26 0 1 0 0-2.52 1.26 1.26 0 0 0 0 2.52zM18 17v-3.62c0-1.93-.41-3.42-2.67-3.42-1.08 0-1.81.6-2.11 1.16h-.03V10.4h-2.09V17h2.18v-3.26c0-.86.16-1.69 1.23-1.69 1.05 0 1.07.98 1.07 1.75V17H18z"/></svg> LinkedIn</a>
+          <a href="#" title="Google Scholar"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zM5 13.18v3.5L12 20l7-3.32v-3.5L12 17l-7-3.82z"/></svg> Scholar</a>
+        </div>
+        <span class="todo">待填:GitHub 用户名 · LinkedIn · Google Scholar</span>
+      </div>
+
+      <!-- 成员 2:医学背景 -->
+      <div class="member">
+        <div class="avatar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <h3>【医学同事姓名】</h3>
+        <div class="role">医学顾问 · 临床背景</div>
+        <p>【一句话简介:临床专科 / 资质 / 所在机构】</p>
+        <div class="links">
+          <a href="#" title="LinkedIn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14zM8.34 17V10.4H6.16V17h2.18zM7.25 9.5a1.26 1.26 0 1 0 0-2.52 1.26 1.26 0 0 0 0 2.52zM18 17v-3.62c0-1.93-.41-3.42-2.67-3.42-1.08 0-1.81.6-2.11 1.16h-.03V10.4h-2.09V17h2.18v-3.26c0-.86.16-1.69 1.23-1.69 1.05 0 1.07.98 1.07 1.75V17H18z"/></svg> LinkedIn</a>
+        </div>
+        <span class="todo">待填:姓名 · 头像 · 简介 · 链接</span>
+      </div>
+
     </div>
   </div>
 </section>
