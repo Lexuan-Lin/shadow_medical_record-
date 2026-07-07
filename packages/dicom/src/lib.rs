@@ -32,6 +32,15 @@ pub struct DicomMeta {
     pub accession: Option<String>,
     /// StudyInstanceUID (0020,000D).
     pub study_uid: Option<String>,
+    /// SeriesInstanceUID (0020,000E).
+    pub series_uid: Option<String>,
+    /// SeriesNumber (0020,0011), parsed as an integer.
+    pub series_number: Option<i32>,
+    /// InstanceNumber (0020,0013), parsed as an integer — the slice's order
+    /// within its series.
+    pub instance_number: Option<i32>,
+    /// SeriesDescription (0008,103E).
+    pub series_description: Option<String>,
 }
 
 /// Reads a named element as a trimmed, non-empty string, if present.
@@ -41,6 +50,12 @@ fn tag_str(obj: &FileDicomObject<InMemDicomObject>, name: &str) -> Option<String
         .and_then(|e| e.to_str().ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Reads a named element as an integer (DICOM IS values are decimal strings,
+/// sometimes space-padded), if present and parseable.
+fn tag_int(obj: &FileDicomObject<InMemDicomObject>, name: &str) -> Option<i32> {
+    tag_str(obj, name).and_then(|s| s.parse().ok())
 }
 
 /// Parses DICOM "YYYYMMDD" (StudyDate) into an RFC3339 UTC-midnight string.
@@ -78,6 +93,10 @@ pub fn parse_meta(dcm_bytes: &[u8]) -> anyhow::Result<DicomMeta> {
         patient_sex: tag_str(&obj, "PatientSex"),
         accession: tag_str(&obj, "AccessionNumber"),
         study_uid: tag_str(&obj, "StudyInstanceUID"),
+        series_uid: tag_str(&obj, "SeriesInstanceUID"),
+        series_number: tag_int(&obj, "SeriesNumber"),
+        instance_number: tag_int(&obj, "InstanceNumber"),
+        series_description: tag_str(&obj, "SeriesDescription"),
     })
 }
 
@@ -128,6 +147,18 @@ mod tests {
         assert_eq!(meta.patient_name.as_deref(), Some("CompressedSamples^CT1"));
         assert_eq!(meta.patient_sex.as_deref(), Some("O"));
         assert!(meta.study_uid.is_some());
+    }
+
+    #[test]
+    fn parses_series_and_instance_fields() {
+        let bytes = sample("CT_small.dcm");
+        let meta = parse_meta(&bytes).unwrap();
+        // Series/Instance grouping fields (imaging overhaul P1): these drive
+        // Study→Series→Instance grouping + slice-stack ordering.
+        assert!(meta.series_uid.is_some(), "SeriesInstanceUID should parse");
+        assert_ne!(meta.series_uid, meta.study_uid, "series UID differs from study UID");
+        assert_eq!(meta.series_number, Some(1));
+        assert_eq!(meta.instance_number, Some(1));
     }
 
     #[test]

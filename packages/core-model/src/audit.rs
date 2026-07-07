@@ -90,7 +90,9 @@ impl Vault {
                     format!("{record_count} 条记录 · 有效期至 {expires}"),
                     Some(sha256.clone()),
                 ),
-                Event::DocumentAdded { .. } | Event::OcrAdded { .. } => continue,
+                Event::DocumentAdded { .. }
+                | Event::OcrAdded { .. }
+                | Event::ImagingInstanceAdded { .. } => continue,
             };
             out.push(AuditEntry {
                 seq: e.seq,

@@ -47,6 +47,24 @@ pub enum Event {
         confidence: Option<f32>,
         created_at: String,
     },
+    /// 影像切片挂载到一个「影像检查(imaging study)」文档上(imaging overhaul P1)。
+    /// 一个 DICOM 实例(切片)进 CAS 后,按 `study_uid` 归入同一 study 文档:第一个
+    /// 实例经 `DocumentAdded` 建文档,其后同 study 的实例只 append 本事件(不建新文档)。
+    ///
+    /// 与本模块其它事件一致,用内容哈希(而非 DB 自增 id)引用行,保证脱离具体
+    /// SQLite 库仍可重放:`document_ref` 指向 study 文档的锚点 source_file(即第一个
+    /// 实例的 source_file),`source_file_hash` 指向本切片自己的 source_file。
+    /// materialize 时顺带把 `study_uid` 落到该文档(`document.study_uid`),供
+    /// study→document 查找;因此 `DocumentAdded` 无需新增字段。
+    ImagingInstanceAdded {
+        document_ref: DocRef,
+        source_file_hash: String,
+        study_uid: String,
+        series_uid: Option<String>,
+        series_number: Option<i32>,
+        instance_number: Option<i32>,
+        created_at: String,
+    },
     /// 审计事件:一次导出(如时间线 HTML)。对 DB 投影是纯粹的 no-op —— 只留痕
     /// 供 `Vault::audit_log()` 展示,`apply_event`/`rebuild_from_log` 必须忽略它。
     ExportPerformed {

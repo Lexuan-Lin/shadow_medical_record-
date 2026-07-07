@@ -36,6 +36,8 @@ fn main() -> anyhow::Result<()> {
                         format!("dedup  {} (already stored & indexed, id={})", o.name, o.source_file_id),
                     pipeline::IngestStatus::StoredNoText =>
                         format!("import {} (stored, no text layer, id={})", o.name, o.source_file_id),
+                    pipeline::IngestStatus::InstanceAttached =>
+                        format!("attach {} (DICOM slice merged into study, id={})", o.name, o.source_file_id),
                 };
                 println!("{line}");
             }

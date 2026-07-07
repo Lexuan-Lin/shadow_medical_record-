@@ -149,6 +149,30 @@ pub struct NewOcr {
     pub confidence: Option<f32>,
 }
 
+/// One DICOM slice (instance) attached to an imaging-study document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImagingInstance {
+    pub id: i64,
+    pub document_id: i64,
+    pub source_file_id: i64,
+    pub series_uid: Option<String>,
+    pub series_number: Option<i32>,
+    pub instance_number: Option<i32>,
+}
+
+/// Request to attach a DICOM slice to a study document (imaging overhaul P1).
+pub struct NewImagingInstance {
+    /// The study document this slice belongs to (its grouping anchor).
+    pub document_id: i64,
+    /// The CAS source_file holding this slice's raw `.dcm` bytes.
+    pub source_file_id: i64,
+    /// StudyInstanceUID — also stamped onto `document.study_uid` on first use.
+    pub study_uid: String,
+    pub series_uid: Option<String>,
+    pub series_number: Option<i32>,
+    pub instance_number: Option<i32>,
+}
+
 impl Vault {
     pub(crate) fn now_rfc3339() -> String {
         Utc::now().to_rfc3339()

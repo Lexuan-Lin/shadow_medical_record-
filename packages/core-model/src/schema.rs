@@ -86,6 +86,25 @@ pub fn migrate(conn: &Connection) -> Result<(), MedmeError> {
              COMMIT;",
         )?;
     }
+    if v < 5 {
+        // Imaging overhaul P1: model DICOM as Study→Series→Instance. A study
+        // document (doc_type imaging_report) groups its slices; `study_uid`
+        // enables study→document lookup; `imaging_instance` holds one row per
+        // slice (source_file), ordered by (series_number, instance_number).
+        conn.execute_batch(
+            "BEGIN;\n\
+             ALTER TABLE document ADD COLUMN study_uid TEXT;\n\
+             CREATE INDEX idx_document_study ON document(study_uid);\n\
+             CREATE TABLE imaging_instance (\
+               id INTEGER PRIMARY KEY, \
+               document_id INTEGER NOT NULL REFERENCES document(id) ON DELETE CASCADE, \
+               source_file_id INTEGER NOT NULL REFERENCES source_file(id), \
+               series_uid TEXT, series_number INTEGER, instance_number INTEGER);\n\
+             CREATE INDEX idx_imaging_instance_document ON imaging_instance(document_id);\n\
+             PRAGMA user_version = 5;\n\
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -102,7 +121,7 @@ mod tests {
     fn migration_is_v2_with_doc_date_end() {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::open(dir.path()).unwrap();
-        assert_eq!(v.user_version().unwrap(), 4);
+        assert_eq!(v.user_version().unwrap(), 5);
         // 列存在且可空:round-trip 一个区间
         let imp = v.import("h.txt", "text/plain", b"stay").unwrap();
         let start = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
@@ -149,7 +168,7 @@ mod tests {
         assert_eq!(
             conn.query_row::<i64, _, _>("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap(),
-            4
+            5
         );
         // 新列可用
         conn.execute("INSERT INTO source_file (content_hash,original_name,mime_type,byte_size,storage_path,imported_at) VALUES ('h','n','m',1,'p','t')", []).unwrap();

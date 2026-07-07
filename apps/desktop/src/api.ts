@@ -8,6 +8,7 @@ import type {
   PatientProfile,
   TimelineGroup,
   AuditEntry,
+  ImagingInstance,
 } from "./types";
 
 export const api = {  listTimelineGrouped: () => invoke<TimelineGroup[]>("list_timeline_grouped"),
@@ -20,6 +21,8 @@ export const api = {  listTimelineGrouped: () => invoke<TimelineGroup[]>("list_t
   // invoke() 对应解析为 ArrayBuffer,避免大文件在 IPC 上被膨胀成文本。
   readSourceBytes: (id: number) => invoke<ArrayBuffer>("read_source_bytes", { id }),
   renderDicom: (id: number) => invoke<ArrayBuffer>("render_dicom", { id }),
+  getImagingInstances: (documentId: number) =>
+    invoke<ImagingInstance[]>("get_imaging_instances", { documentId }),
   exportVault: (destPath: string) =>
     invoke<ExportSummary>("export_vault", { destPath }),
   exportTimelineHtml: (destPath: string) =>

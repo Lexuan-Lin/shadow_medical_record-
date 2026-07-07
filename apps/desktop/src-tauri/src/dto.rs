@@ -1,4 +1,4 @@
-use core_model::{AuditEntry, Document, Encounter, SourceFile};
+use core_model::{AuditEntry, Document, Encounter, ImagingInstance, SourceFile};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -9,6 +9,8 @@ pub struct DocumentSummary {
     pub doc_date_end: Option<String>, // RFC3339
     pub title: Option<String>,
     pub page_count: i32,
+    /// 影像检查文档的切片数(imaging overhaul P1);非影像文档为 None。
+    pub slice_count: Option<i32>,
 }
 impl From<&Document> for DocumentSummary {
     fn from(d: &Document) -> Self {
@@ -19,6 +21,7 @@ impl From<&Document> for DocumentSummary {
             doc_date_end: d.doc_date_end.map(|x| x.to_rfc3339()),
             title: d.title.clone(),
             page_count: d.page_count,
+            slice_count: None,
         }
     }
 }
@@ -47,6 +50,25 @@ impl From<&SourceFile> for SourceFileMeta {
 pub struct SearchResult {
     pub document: DocumentSummary,
     pub snippet: String,
+}
+
+/// 一台影像检查的一张切片(imaging overhaul P1),按堆栈顺序返回给前端逐张加载。
+#[derive(Serialize)]
+pub struct ImagingInstanceDto {
+    pub source_file_id: i64,
+    pub series_uid: Option<String>,
+    pub series_number: Option<i32>,
+    pub instance_number: Option<i32>,
+}
+impl From<&ImagingInstance> for ImagingInstanceDto {
+    fn from(i: &ImagingInstance) -> Self {
+        ImagingInstanceDto {
+            source_file_id: i.source_file_id,
+            series_uid: i.series_uid.clone(),
+            series_number: i.series_number,
+            instance_number: i.instance_number,
+        }
+    }
 }
 
 #[derive(Serialize)]

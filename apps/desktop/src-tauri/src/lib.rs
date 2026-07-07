@@ -44,6 +44,7 @@ pub fn run() {
             commands::import_paths,
             commands::read_source_bytes,
             commands::render_dicom,
+            commands::get_imaging_instances,
             commands::export_vault,
             commands::export_timeline_html,
             commands::create_share,

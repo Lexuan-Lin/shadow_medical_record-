@@ -5,6 +5,7 @@ export interface DocumentSummary {
   doc_date_end: string | null; // RFC3339
   title: string | null;
   page_count: number;
+  slice_count: number | null; // 影像检查:DICOM 切片数(imaging overhaul P1)
 }
 export interface SourceFileMeta {
   id: number;
@@ -29,6 +30,13 @@ export interface ImportOutcome {
   source_file_id: number;
   status: string;
   doc_type: string | null;
+}
+// 影像检查的一张切片(imaging overhaul P1)—— 一台 CT/MR 的多张 DICOM 组成一叠。
+export interface ImagingInstance {
+  source_file_id: number;
+  series_uid: string | null;
+  series_number: number | null;
+  instance_number: number | null;
 }
 export interface ExportSummary {
   file_count: number;

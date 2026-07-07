@@ -81,6 +81,7 @@ impl Vault {
             let tx = self.conn().unchecked_transaction()?;
             tx.execute("DELETE FROM document_fts", [])?;
             tx.execute("DELETE FROM ocr_result", [])?;
+            tx.execute("DELETE FROM imaging_instance", [])?;
             tx.execute("DELETE FROM document", [])?;
             tx.execute("DELETE FROM encounter", [])?;
             tx.execute("DELETE FROM source_file", [])?;
@@ -317,6 +318,41 @@ fn apply_event(tx: &Transaction, vault: &Vault, event: &Event) -> Result<(), Med
             tx.execute(
                 "INSERT INTO document_fts(document_id, title, body) VALUES (?1,?2,?3)",
                 rusqlite::params![document_id, title_tok, body],
+            )?;
+        }
+        // 影像切片挂载(imaging overhaul P1):把 DICOM 切片行插入 imaging_instance,
+        // 并把 study_uid 落到 study 文档上(供 study→document 查找)。两个引用都用
+        // 内容哈希解析成当前库的行 id,保证 rebuild_from_log 脱库重放也一致。
+        Event::ImagingInstanceAdded {
+            document_ref,
+            source_file_hash,
+            study_uid,
+            series_uid,
+            series_number,
+            instance_number,
+            created_at: _,
+        } => {
+            let document_id: i64 = tx.query_row(
+                "SELECT d.id FROM document d JOIN source_file sf ON d.source_file_id = sf.id
+                 WHERE sf.content_hash = ?1",
+                [&document_ref.source_file_hash],
+                |r| r.get(0),
+            )?;
+            let source_file_id: i64 = tx.query_row(
+                "SELECT id FROM source_file WHERE content_hash = ?1",
+                [source_file_hash],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO imaging_instance
+                 (document_id, source_file_id, series_uid, series_number, instance_number)
+                 VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![document_id, source_file_id, series_uid, series_number, instance_number],
+            )?;
+            // Stamp study_uid on the document (first instance wins; idempotent).
+            tx.execute(
+                "UPDATE document SET study_uid = ?1 WHERE id = ?2 AND study_uid IS NULL",
+                rusqlite::params![study_uid, document_id],
             )?;
         }
         // 审计事件:纯粹的日志留痕(见 crate::audit),对 DB 投影是 no-op —— 不

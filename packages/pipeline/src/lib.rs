@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use core_model::{DocType, NewDocument, NewOcr, OcrBackendKind, Vault};
+use core_model::{DocType, NewDocument, NewImagingInstance, NewOcr, OcrBackendKind, Vault};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -63,8 +63,12 @@ fn dicom_summary(meta: &dicom::DicomMeta) -> String {
     lines.join("\n")
 }
 
-/// 按 DICOM 标签建 document + ocr_result(Native 后端,合成摘要文本)。
+/// 按 DICOM 标签建/挂 study 文档(Study→Series→Instance,见 docs/014_Imaging_Overhaul.md)。
 /// 免 OCR:DICOM 自带结构化元数据(见 docs/010_Imaging_DICOM.md)。
+///
+/// 分组:同 `StudyInstanceUID` 的多张切片归入**一个** imaging_report 文档 ——
+/// 第一张切片建文档(合成摘要 + study 级标题/日期),其后同 study 的切片仅 append
+/// 一条 imaging_instance(不建新文档)。因此一台 200 层 CT = 1 张时间线卡而非 200 份。
 fn add_dicom_document(
     vault: &Vault,
     sid: i64,
@@ -73,6 +77,46 @@ fn add_dicom_document(
     deduped: bool,
 ) -> anyhow::Result<IngestOutcome> {
     let meta = dicom::parse_meta(bytes)?;
+
+    // 去重:同一张切片(非 study 锚点、无自己的 document)再次导入时,靠
+    // imaging_instance 判定已入库,避免重复挂载。锚点切片的再导入由上游
+    // `has_document` 早已拦截。
+    if deduped {
+        if let Some(_doc_id) = vault.imaging_document_for_source(sid)? {
+            return Ok(IngestOutcome {
+                source_file_id: sid,
+                name: name.to_string(),
+                status: IngestStatus::Deduped,
+                doc_type: Some(DocType::ImagingReport),
+            });
+        }
+    }
+
+    // 已有同 study 的文档 → 只挂切片,不建新文档。
+    if let Some(study_uid) = meta.study_uid.as_deref() {
+        if let Some(doc_id) = vault.document_id_for_study(study_uid)? {
+            vault.add_imaging_instance(NewImagingInstance {
+                document_id: doc_id,
+                source_file_id: sid,
+                study_uid: study_uid.to_string(),
+                series_uid: meta.series_uid.clone(),
+                series_number: meta.series_number,
+                instance_number: meta.instance_number,
+            })?;
+            let doc_type = vault
+                .document_by_id(doc_id)?
+                .map(|d| d.doc_type)
+                .unwrap_or(DocType::ImagingReport);
+            return Ok(IngestOutcome {
+                source_file_id: sid,
+                name: name.to_string(),
+                status: IngestStatus::InstanceAttached,
+                doc_type: Some(doc_type),
+            });
+        }
+    }
+
+    // 该 study 的第一张切片(或无 study_uid 的单张)→ 建 study 文档。
     let doc_date: Option<DateTime<Utc>> = meta
         .study_date
         .as_deref()
@@ -98,6 +142,17 @@ fn add_dicom_document(
         text: summary,
         confidence: None,
     })?;
+    // 首张切片挂到新建的 study 文档上(顺带把 study_uid 落到文档,供后续切片查找)。
+    if let Some(study_uid) = meta.study_uid.as_deref() {
+        vault.add_imaging_instance(NewImagingInstance {
+            document_id: doc.id,
+            source_file_id: sid,
+            study_uid: study_uid.to_string(),
+            series_uid: meta.series_uid.clone(),
+            series_number: meta.series_number,
+            instance_number: meta.instance_number,
+        })?;
+    }
     let status = if deduped { IngestStatus::Backfilled } else { IngestStatus::New };
     Ok(IngestOutcome {
         source_file_id: sid,
@@ -165,6 +220,8 @@ pub enum IngestStatus {
     Deduped,
     Backfilled,
     StoredNoText,
+    /// DICOM 切片并入了已存在的同 study 影像检查文档(未新建文档)。
+    InstanceAttached,
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +468,84 @@ mod tests {
         let o2 = ingest(&v, p).unwrap();
         assert_eq!(o2.status, IngestStatus::Deduped);
         assert_eq!(v.timeline().unwrap().len(), 1);
+    }
+
+    /// 导入一个 12 张切片的 DICOM 序列文件夹 → 应聚成**一个** imaging_report 文档
+    /// (而非 12 份),含 12 条有序 imaging_instance(按 instance_number)。再次导入
+    /// 整个文件夹全部去重,文档与切片数均不变。样本随仓库提交,离线可跑。
+    #[test]
+    fn ingest_dicom_series_groups_into_one_study() {
+        let vdir = tempfile::tempdir().unwrap();
+        let v = Vault::open(vdir.path()).unwrap();
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/demo-dataset/imaging/头颅CT序列"
+        ));
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("dcm"))
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 12, "fixture should have 12 slices");
+
+        let mut new_count = 0;
+        let mut attached_count = 0;
+        for f in &files {
+            let o = ingest(&v, f).unwrap();
+            match o.status {
+                IngestStatus::New => new_count += 1,
+                IngestStatus::InstanceAttached => attached_count += 1,
+                s => panic!("unexpected status {s:?} for {}", f.display()),
+            }
+            assert_eq!(o.doc_type, Some(core_model::DocType::ImagingReport));
+        }
+        // 第一张建文档,其余 11 张并入。
+        assert_eq!(new_count, 1);
+        assert_eq!(attached_count, 11);
+
+        // 时间线只有一张卡。
+        let tl = v.timeline().unwrap();
+        assert_eq!(tl.len(), 1);
+        let doc_id = tl[0].document_id;
+
+        // 12 条切片,按 instance_number 有序(1..=12)。
+        let insts = v.imaging_instances(doc_id).unwrap();
+        assert_eq!(insts.len(), 12);
+        let order: Vec<i32> = insts.iter().map(|i| i.instance_number.unwrap()).collect();
+        assert_eq!(order, (1..=12).collect::<Vec<_>>());
+
+        // 再次导入整个文件夹 → 全部去重,不新增文档/切片。
+        for f in &files {
+            let o = ingest(&v, f).unwrap();
+            assert_eq!(o.status, IngestStatus::Deduped, "re-import should dedup {}", f.display());
+        }
+        assert_eq!(v.timeline().unwrap().len(), 1);
+        assert_eq!(v.imaging_instances(doc_id).unwrap().len(), 12);
+
+        // rebuild_from_log 后状态一致(脱库重放也是一个 study + 12 切片)。
+        v.rebuild_from_log().unwrap();
+        assert_eq!(v.timeline().unwrap().len(), 1);
+        assert_eq!(v.imaging_instances(doc_id).unwrap().len(), 12);
+    }
+
+    /// 单张 DICOM(带 study_uid、无同伴切片)仍工作:1 个 study 文档 + 1 条切片。
+    #[test]
+    fn ingest_single_dicom_is_one_study_one_instance() {
+        let vdir = tempfile::tempdir().unwrap();
+        let v = Vault::open(vdir.path()).unwrap();
+        let p = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/demo-dataset/dicom/CT_small.dcm"
+        ));
+        let o = ingest(&v, p).unwrap();
+        assert_eq!(o.status, IngestStatus::New);
+        let tl = v.timeline().unwrap();
+        assert_eq!(tl.len(), 1);
+        let insts = v.imaging_instances(tl[0].document_id).unwrap();
+        assert_eq!(insts.len(), 1);
+        assert_eq!(insts[0].instance_number, Some(1));
     }
 
     /// 扫描图 PDF(无文本层):应通过 recognize_pdf 补 OCR 文本,分类/日期取自

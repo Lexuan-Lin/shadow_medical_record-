@@ -56,6 +56,11 @@ function DocCard({ d, onSelect }: { d: DocumentSummary; onSelect: (id: number) =
           >
             {TYPE_LABEL[d.doc_type] ?? d.doc_type}
           </span>
+          {d.slice_count && d.slice_count > 1 && (
+            <span className="text-xs font-mono text-slate-400 ml-2">
+              · {d.slice_count} 张切片
+            </span>
+          )}
         </div>
       </div>
     </button>

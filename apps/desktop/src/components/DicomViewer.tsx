@@ -15,11 +15,13 @@ const TOOLS: { id: ToolId; label: string; icon: typeof SlidersHorizontal }[] = [
 
 let seq = 0;
 
+// 一台影像检查的多张切片作为一叠传入(imaging overhaul P1):dwv 的
+// loadImageObject 接收多条数据 → 内置 Scroll 工具即可逐张翻页。单张也走同一路径。
 export default function DicomViewer({
-  bytes,
+  slices,
   fileName,
 }: {
-  bytes: Uint8Array;
+  slices: Uint8Array[];
   fileName: string;
 }) {
   const containerId = useRef(`dwv-layer-group-${++seq}`).current;
@@ -61,12 +63,17 @@ export default function DicomViewer({
       app.addEventListener("error", handleError);
       window.addEventListener("resize", handleResize);
 
-      // dwv 的内存加载接口需要独立的 ArrayBuffer。
-      const buffer = bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength
-      ) as ArrayBuffer;
-      app.loadImageObject([{ name: fileName, filename: fileName, data: buffer }]);
+      // dwv 的内存加载接口需要独立的 ArrayBuffer;每张切片一条数据,dwv 按加载
+      // 顺序堆叠(切片已在后端按 series/instance 排好序)。
+      const data = slices.map((bytes, i) => {
+        const buffer = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer;
+        const name = slices.length > 1 ? `${fileName} [${i + 1}/${slices.length}]` : fileName;
+        return { name, filename: name, data: buffer };
+      });
+      app.loadImageObject(data);
     } catch (e) {
       console.error("DICOM 加载失败", e);
       setError("DICOM 加载失败");
@@ -83,7 +90,7 @@ export default function DicomViewer({
       }
       appRef.current = null;
     };
-  }, [bytes, fileName, containerId]);
+  }, [slices, fileName, containerId]);
 
   // 工具切换。
   useEffect(() => {

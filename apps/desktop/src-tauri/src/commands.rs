@@ -1,8 +1,22 @@
 use crate::dto::*;
-use core_model::Vault;
+use core_model::{DocType, Document, Vault};
 use std::sync::Mutex;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
+
+/// DocumentSummary + 影像检查切片数(imaging overhaul P1):影像 study 文档在时间线
+/// 上显示"N 张切片";非影像文档 slice_count 为 None。
+fn doc_summary(v: &Vault, d: &Document) -> DocumentSummary {
+    let mut s = DocumentSummary::from(d);
+    if d.doc_type == DocType::ImagingReport {
+        if let Ok(n) = v.imaging_instance_count(d.id) {
+            if n > 0 {
+                s.slice_count = Some(n as i32);
+            }
+        }
+    }
+    s
+}
 
 pub struct AppState {
     pub vault: Mutex<Vault>,
@@ -23,7 +37,7 @@ pub fn list_timeline_grouped(state: State<AppState>) -> Result<Vec<TimelineGroup
     for (enc, docs) in v.encounters_with_docs().map_err(|e| e.to_string())? {
         let sort = enc.start_date.map(|d| d.to_rfc3339());
         let summary = EncounterSummary::from_encounter(&enc, docs.len() as i64);
-        let doc_dtos = docs.iter().map(DocumentSummary::from).collect();
+        let doc_dtos = docs.iter().map(|d| doc_summary(&v, d)).collect();
         groups.push((
             sort,
             TimelineGroup::Encounter {
@@ -34,7 +48,7 @@ pub fn list_timeline_grouped(state: State<AppState>) -> Result<Vec<TimelineGroup
     }
     for d in v.standalone_documents().map_err(|e| e.to_string())? {
         let sort = d.doc_date.map(|x| x.to_rfc3339());
-        groups.push((sort, TimelineGroup::Document { doc: DocumentSummary::from(&d) }));
+        groups.push((sort, TimelineGroup::Document { doc: doc_summary(&v, &d) }));
     }
     // 按日期倒序,无日期最后
     groups.sort_by(|a, b| match (&a.0, &b.0) {
@@ -82,7 +96,7 @@ pub fn get_document(state: State<AppState>, id: i64) -> Result<DocumentDetail, S
     let ocr_confidence = v.ocr_confidence(id).map_err(|e| e.to_string())?;
     let ocr_backend = v.ocr_backend(id).map_err(|e| e.to_string())?;
     Ok(DocumentDetail {
-        document: DocumentSummary::from(&doc),
+        document: doc_summary(&v, &doc),
         source_file: SourceFileMeta::from(&sf),
         ocr_text: text,
         ocr_confidence,
@@ -108,6 +122,7 @@ pub fn import_paths(
                     pipeline::IngestStatus::Backfilled => "backfilled",
                     pipeline::IngestStatus::Deduped => "deduped",
                     pipeline::IngestStatus::StoredNoText => "stored_no_text",
+                    pipeline::IngestStatus::InstanceAttached => "instance_attached",
                 }
                 .to_string();
                 out.push(ImportOutcome {
@@ -148,6 +163,18 @@ pub fn read_source_bytes(state: State<AppState>, id: i64) -> Result<tauri::ipc::
     let path = v.root_join(&sf.storage_path); // 见 core-model cas.rs 的 root_join
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// 一台影像检查文档的全部切片(按堆栈顺序)。前端据此把多张 DICOM 作为一叠
+/// 载入查看器滚动阅片;返回空则该文档退回单源渲染(见 DocumentView)。
+#[tauri::command]
+pub fn get_imaging_instances(
+    state: State<AppState>,
+    document_id: i64,
+) -> Result<Vec<ImagingInstanceDto>, String> {
+    let v = lock(&state)?;
+    let insts = v.imaging_instances(document_id).map_err(|e| e.to_string())?;
+    Ok(insts.iter().map(ImagingInstanceDto::from).collect())
 }
 
 #[tauri::command]

@@ -41,7 +41,9 @@ export default function DocumentView({
   const { document: doc, source_file: sf, ocr_text, ocr_confidence, ocr_backend } = detail;
   const [origUrl, setOrigUrl] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState(false);
-  const [dicomBytes, setDicomBytes] = useState<Uint8Array | null>(null);
+  // 影像检查:整叠切片的原始字节(imaging overhaul P1)。lightbox 打开时按堆栈顺序
+  // 载入,关闭时释放。单张 DICOM 或无切片记录时退回该文档自身的 source。
+  const [dicomSlices, setDicomSlices] = useState<Uint8Array[] | null>(null);
   const isImage = sf.mime_type.startsWith("image/");
   const isPdf = sf.mime_type === "application/pdf";
   const isDicom = sf.mime_type === "application/dicom";
@@ -61,7 +63,9 @@ export default function DocumentView({
     if (!hasOriginal) return;
     let cancelled = false;
     let url: string | null = null;
-    const bytesP = isDicom ? api.renderDicom(doc.id) : api.readSourceBytes(doc.id);
+    // 缩略图取该文档自身的 source_file(影像检查 = 其锚点切片)。注意用 sf.id
+    // 而非 doc.id:切片会新建无文档的 source_file,两者 id 不再一一对应。
+    const bytesP = isDicom ? api.renderDicom(sf.id) : api.readSourceBytes(sf.id);
     const blobType = isDicom ? "image/png" : sf.mime_type;
     bytesP
       .then((bytes) => {
@@ -75,26 +79,33 @@ export default function DocumentView({
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [doc.id, hasOriginal, isDicom, sf.mime_type]);
+  }, [sf.id, hasOriginal, isDicom, sf.mime_type]);
 
-  // 全屏查看 DICOM:按需读取原始字节,交给 dwv 做交互式渲染(窗宽窗位/缩放/滚动)。
+  // 全屏查看 DICOM:按需读取整叠切片的原始字节,交给 dwv 做交互式堆栈渲染
+  // (窗宽窗位 / 缩放 / 序列滚动)。先取该检查的切片清单(已按堆栈顺序),逐张读取;
+  // 无切片记录时退回该文档自身的 source(单张 DICOM)。
   useEffect(() => {
     if (!isDicom || !lightbox) return;
     let cancelled = false;
-    api
-      .readSourceBytes(doc.id)
-      .then((raw) => {
-        if (!cancelled) setDicomBytes(new Uint8Array(raw));
-      })
-      .catch(() => {});
+    (async () => {
+      try {
+        const insts = await api.getImagingInstances(doc.id);
+        const ids =
+          insts.length > 0 ? insts.map((i) => i.source_file_id) : [sf.id];
+        const buffers = await Promise.all(ids.map((id) => api.readSourceBytes(id)));
+        if (!cancelled) setDicomSlices(buffers.map((b) => new Uint8Array(b)));
+      } catch {
+        /* 读取失败:保持 null,lightbox 显示加载态 */
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [doc.id, isDicom, lightbox]);
+  }, [doc.id, sf.id, isDicom, lightbox]);
 
-  // 关闭后释放原始字节,避免大文件常驻内存。
+  // 关闭后释放整叠字节,避免大序列常驻内存。
   useEffect(() => {
-    if (!lightbox) setDicomBytes(null);
+    if (!lightbox) setDicomSlices(null);
   }, [lightbox]);
 
   const dateStr = doc.doc_date_end
@@ -129,6 +140,11 @@ export default function DocumentView({
             {TYPE_LABEL[doc.doc_type] ?? doc.doc_type}
           </span>
           <span className="text-sm font-mono text-slate-500">{dateStr}</span>
+          {doc.slice_count && doc.slice_count > 1 && (
+            <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-sky-50 text-sky-700">
+              {doc.slice_count} 张切片
+            </span>
+          )}
         </div>
         <div className="mt-2 text-xs font-mono text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
           <span>原始文件:{sf.original_name}</span>
@@ -249,8 +265,8 @@ export default function DocumentView({
             }
           >
             {isDicom ? (
-              dicomBytes ? (
-                <DicomViewer bytes={dicomBytes} fileName={sf.original_name} />
+              dicomSlices ? (
+                <DicomViewer slices={dicomSlices} fileName={sf.original_name} />
               ) : (
                 <div
                   className="flex-1 flex items-center justify-center text-white/60 text-sm"
