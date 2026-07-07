@@ -147,6 +147,11 @@ pub fn classify(text: &str) -> DocType {
         DocType::Surgery
     } else if has("检验") || has("化验") || has("laborator") || word("lab") {
         DocType::LabReport
+    } else if has("门诊病历") || has("门诊记录") || has("急诊病历") || has("急诊记录")
+        || has("入院记录") || has("病程记录") || has("门诊电子病历")
+    {
+        // 病历/门急诊记录:文档自己声明的类型优先于正文里顺带提到的 CT/MRI
+        DocType::ClinicalNote
     } else if has("影像") || has("超声") || has("ultrasound") || has("imaging")
         || has("radiolog") || has("computed tomograph") || has("magnetic resonance")
         || word("ct") || word("mri") || word("xray") || has("x-ray")
@@ -223,6 +228,19 @@ mod tests {
     #[test]
     fn classify_surgery() {
         assert_eq!(classify("手术记录\n手术经过:行腹腔镜胆囊切除术"), DocType::Surgery);
+    }
+
+    #[test]
+    fn classify_clinical_note_beats_incidental_imaging_mention() {
+        // 门诊病历正文提到 CT/MRI,不应误判为影像报告
+        assert_eq!(
+            classify("门诊病历\n就诊科室:神经内科\n复查头颅 MRI 示脑梗死软化灶。"),
+            DocType::ClinicalNote
+        );
+        assert_eq!(
+            classify("急诊记录\n急诊头颅 CT 未见出血。"),
+            DocType::ClinicalNote
+        );
     }
 
     #[test]

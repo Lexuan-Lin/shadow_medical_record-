@@ -1,7 +1,8 @@
-import { Activity, ShieldCheck, UploadCloud } from "lucide-react";
+import { Activity, ShieldCheck, UploadCloud, Search } from "lucide-react";
 
 const NAV = [
   { id: "timeline", label: "生命时间线", sub: "Medical Lifeline", icon: Activity },
+  { id: "search", label: "搜索", sub: "Search", icon: Search },
   { id: "import", label: "导入病历", sub: "Import Records", icon: UploadCloud },
 ];
 

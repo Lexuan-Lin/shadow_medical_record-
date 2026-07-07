@@ -4,6 +4,7 @@ import PatientBanner from "./components/PatientBanner";
 import Timeline from "./components/Timeline";
 import DocumentView from "./components/DocumentView";
 import ImportView from "./components/ImportView";
+import SearchView from "./components/SearchView";
 import { api } from "./api";
 import type { TimelineGroup, DocumentDetail } from "./types";
 import "./App.css";
@@ -56,6 +57,8 @@ export default function App() {
           <DocumentView detail={detail} onBack={() => setDetail(null)} />
         ) : tab === "import" ? (
           <ImportView onImported={afterImport} />
+        ) : tab === "search" ? (
+          <SearchView onSelect={openDoc} />
         ) : (
           <Timeline groups={groups} onSelect={openDoc} />
         )}
