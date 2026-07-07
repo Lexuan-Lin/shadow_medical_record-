@@ -239,6 +239,12 @@ pub fn open_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
     app.opener().open_path(path, None::<String>).map_err(|e| e.to_string())
 }
 
+/// 在系统默认浏览器打开一个外部 URL(用于「关于」页的项目主页/源码链接)。
+#[tauri::command]
+pub fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    app.opener().open_url(url, None::<String>).map_err(|e| e.to_string())
+}
+
 /// 数据保险箱(vault)根目录路径 —— 设置页展示,供用户把它放进 iCloud/坚果云
 /// 等云同步目录,实现无需服务器的多设备同步。只读展示,运行时不支持迁移。
 #[tauri::command]
