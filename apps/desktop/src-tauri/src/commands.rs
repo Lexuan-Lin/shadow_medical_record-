@@ -16,20 +16,6 @@ fn lock<'a>(s: &'a State<'a, AppState>) -> Result<std::sync::MutexGuard<'a, Vaul
 }
 
 #[tauri::command]
-pub fn list_timeline(state: State<AppState>) -> Result<Vec<DocumentSummary>, String> {
-    let v = lock(&state)?;
-    let entries = v.timeline().map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for e in entries {
-        // 用 document_by_id 拿完整字段(timeline 的 title 已是真实值,但这里统一走 summary)
-        if let Some(doc) = v.document_by_id(e.document_id).map_err(|e| e.to_string())? {
-            out.push(DocumentSummary::from(&doc));
-        }
-    }
-    Ok(out)
-}
-
-#[tauri::command]
 pub fn list_timeline_grouped(state: State<AppState>) -> Result<Vec<TimelineGroup>, String> {
     let v = lock(&state)?;
     v.rebuild_encounters().map_err(|e| e.to_string())?; // 幂等,确保 CLI 导入的数据也分组

@@ -219,6 +219,10 @@ pub fn classify(text: &str) -> DocType {
         DocType::ImagingReport
     } else if has("病理") || has("pathology") {
         DocType::Pathology
+    } else if has("血压记录") || has("血糖记录") || has("体温记录") || has("家庭监测")
+        || has("血压监测") || has("血糖监测") || has("自测")
+    {
+        DocType::Other
     } else {
         DocType::Unknown
     }

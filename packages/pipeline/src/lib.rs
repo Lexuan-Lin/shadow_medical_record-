@@ -30,14 +30,37 @@ fn dicom_title(meta: &dicom::DicomMeta, name: &str) -> String {
 /// A short, searchable summary line synthesized from DICOM tags — DICOM has
 /// no OCR text, so this stands in as the document's `ocr_result` body.
 fn dicom_summary(meta: &dicom::DicomMeta) -> String {
-    let parts = [
-        meta.modality.as_deref(),
-        meta.study_date.as_deref().and_then(|d| d.split('T').next()),
-        meta.description.as_deref(),
-        meta.institution.as_deref(),
-        meta.patient_name.as_deref(),
-    ];
-    parts.into_iter().flatten().collect::<Vec<_>>().join(" ")
+    let mut lines = vec!["DICOM 影像检查".to_string()];
+    if let Some(m) = &meta.modality {
+        let cn = match m.as_str() {
+            "CT" => "CT",
+            "MR" => "MRI",
+            "US" => "超声",
+            "CR" | "DX" | "DR" => "X线",
+            "MG" => "钼靶",
+            "PT" => "PET",
+            "NM" => "核医学",
+            _ => m.as_str(),
+        };
+        lines.push(format!("检查类型:{cn}({m})"));
+    }
+    if let Some(d) = meta.study_date.as_deref().and_then(|d| d.split('T').next()) {
+        lines.push(format!("检查日期:{d}"));
+    }
+    if let Some(b) = &meta.body_part {
+        lines.push(format!("检查部位:{b}"));
+    }
+    if let Some(desc) = &meta.description {
+        lines.push(format!("检查描述:{desc}"));
+    }
+    if let Some(i) = &meta.institution {
+        lines.push(format!("检查机构:{i}"));
+    }
+    if let Some(p) = &meta.patient_name {
+        lines.push(format!("患者:{p}"));
+    }
+    lines.push("(DICOM 影像文件,点击上方原件可进行窗宽窗位 / 缩放 / 序列滚动交互阅片。)".to_string());
+    lines.join("\n")
 }
 
 /// 按 DICOM 标签建 document + ocr_result(Native 后端,合成摘要文本)。
