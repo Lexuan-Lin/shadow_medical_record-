@@ -488,4 +488,188 @@ mod tests {
             "watermark marked fully-applied since the DB already reflected these rows"
         );
     }
+
+    // ---- per-device log segmentation (docs/013 §3, §6) ----------------------
+
+    /// Recursively copy `src` dir contents into `dst` (used to merge a second
+    /// device's CAS objects into a shared vault in the tests below).
+    fn copy_dir_into(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let to = dst.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy_dir_into(&e.path(), &to);
+            } else {
+                std::fs::copy(e.path(), &to).unwrap();
+            }
+        }
+    }
+
+    fn only_segment(log_dir: &std::path::Path) -> std::path::PathBuf {
+        std::fs::read_dir(log_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+            .expect("one jsonl segment")
+    }
+
+    /// Seed a fresh vault at `dir` with one imported+OCR'd doc whose OCR body
+    /// contains `needle` (searchable). Returns nothing; caller inspects `dir`.
+    fn seed_doc(dir: &std::path::Path, name: &str, needle: &str) {
+        let v = Vault::open(dir).unwrap();
+        let imp = v.import(name, "text/plain", needle.as_bytes()).unwrap();
+        let doc = v
+            .add_document(NewDocument {
+                source_file_id: imp.source_file.id,
+                doc_type: DocType::LabReport,
+                doc_date: Some(chrono::Utc::now()),
+                doc_date_end: None,
+                title: Some(name.into()),
+                language: None,
+                page_count: 1,
+            })
+            .unwrap();
+        v.add_ocr(NewOcr {
+            document_id: doc.id,
+            page_no: 1,
+            backend: OcrBackendKind::Native,
+            model_version: "text-layer".into(),
+            text: needle.into(),
+            confidence: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn new_events_land_in_per_device_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        v.import("a.txt", "text/plain", b"hello").unwrap();
+
+        let seg = only_segment(&dir.path().join("log"));
+        let fname = seg.file_name().unwrap().to_str().unwrap();
+        assert!(
+            fname.starts_with(&v.device_id) && fname.ends_with(".jsonl"),
+            "segment {fname} must be namespaced by this device_id {}",
+            v.device_id
+        );
+        assert!(
+            !dir.path().join("log/000001.jsonl").exists(),
+            "new writes must not go to a legacy shared segment"
+        );
+    }
+
+    #[test]
+    fn merges_legacy_log_and_second_device_segment_on_rebuild() {
+        // Device A: seed a doc, then rename its segment to the pre-refactor
+        // single-log name `000001.jsonl` to simulate an existing vault.
+        let a = tempfile::tempdir().unwrap();
+        seed_doc(a.path(), "alpha.txt", "AlphaUniqueNeedle");
+        let a_seg = only_segment(&a.path().join("log"));
+        std::fs::rename(&a_seg, a.path().join("log/000001.jsonl")).unwrap();
+
+        // Device B: seed a *different* doc in its own vault, then splice its
+        // segment + CAS objects into device A's vault as a second device.
+        let b = tempfile::tempdir().unwrap();
+        seed_doc(b.path(), "beta.txt", "BetaUniqueNeedle");
+        let b_seg = only_segment(&b.path().join("log"));
+        std::fs::copy(&b_seg, a.path().join("log/otherdevice-000001.jsonl")).unwrap();
+        copy_dir_into(&b.path().join("objects"), &a.path().join("objects"));
+
+        // Wipe the derived cache so the state is rebuilt purely from the merged
+        // segments + CAS, exactly as a fresh device syncing the folder would.
+        std::fs::remove_file(a.path().join("medme.db")).unwrap();
+
+        let v = Vault::open(a.path()).unwrap();
+        v.rebuild_from_log().unwrap();
+
+        assert_eq!(v.debug_count("source_file"), 2, "both devices' files present");
+        assert_eq!(v.debug_count("document"), 2, "both devices' docs present");
+        assert_eq!(v.search("AlphaUniqueNeedle", 10).unwrap().len(), 1);
+        assert_eq!(v.search("BetaUniqueNeedle", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rebuild_is_deterministic_across_repeated_runs() {
+        // A two-device vault (legacy A + device B), same construction as above.
+        let a = tempfile::tempdir().unwrap();
+        seed_doc(a.path(), "alpha.txt", "AlphaUniqueNeedle");
+        let a_seg = only_segment(&a.path().join("log"));
+        std::fs::rename(&a_seg, a.path().join("log/000001.jsonl")).unwrap();
+        let b = tempfile::tempdir().unwrap();
+        seed_doc(b.path(), "beta.txt", "BetaUniqueNeedle");
+        let b_seg = only_segment(&b.path().join("log"));
+        std::fs::copy(&b_seg, a.path().join("log/otherdevice-000001.jsonl")).unwrap();
+        copy_dir_into(&b.path().join("objects"), &a.path().join("objects"));
+        std::fs::remove_file(a.path().join("medme.db")).unwrap();
+
+        let v = Vault::open(a.path()).unwrap();
+        v.rebuild_from_log().unwrap();
+        let snap = |v: &Vault| {
+            (
+                v.debug_count("source_file"),
+                v.debug_count("document"),
+                v.debug_count("ocr_result"),
+                v.timeline()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.title.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let first = snap(&v);
+        // Rebuilding again must land on byte-identical derived state.
+        v.rebuild_from_log().unwrap();
+        assert_eq!(first, snap(&v), "rebuild must be deterministic");
+    }
+
+    #[test]
+    fn round_trip_import_many_then_rebuild_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        for i in 0..5 {
+            let imp = v
+                .import(&format!("doc{i}.txt"), "text/plain", format!("body {i}").as_bytes())
+                .unwrap();
+            let doc = v
+                .add_document(NewDocument {
+                    source_file_id: imp.source_file.id,
+                    doc_type: DocType::LabReport,
+                    doc_date: Some(chrono::Utc::now()),
+                    doc_date_end: None,
+                    title: Some(format!("title {i}")),
+                    language: None,
+                    page_count: 1,
+                })
+                .unwrap();
+            v.add_ocr(NewOcr {
+                document_id: doc.id,
+                page_no: 1,
+                backend: OcrBackendKind::Native,
+                model_version: "text-layer".into(),
+                text: format!("needle{i} common"),
+                confidence: None,
+            })
+            .unwrap();
+        }
+        v.rebuild_encounters().unwrap();
+
+        let before = (
+            v.debug_count("source_file"),
+            v.debug_count("document"),
+            v.debug_count("ocr_result"),
+            v.search("common", 20).unwrap().len(),
+        );
+        v.rebuild_from_log().unwrap();
+        let after = (
+            v.debug_count("source_file"),
+            v.debug_count("document"),
+            v.debug_count("ocr_result"),
+            v.search("common", 20).unwrap().len(),
+        );
+        assert_eq!(before, after);
+        assert_eq!(after.0, 5);
+    }
 }
