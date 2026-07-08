@@ -17,6 +17,8 @@ export const api = {  listTimelineGrouped: () => invoke<TimelineGroup[]>("list_t
   getDocument: (id: number) => invoke<DocumentDetail>("get_document", { id }),
   importPaths: (paths: string[]) =>
     invoke<ImportOutcome[]>("import_paths", { paths }),
+  // 一键「加载示例数据」(张建国):导入随应用打包的 demo-data/,返回处理的文件数。
+  loadDemoData: () => invoke<number>("load_demo_data"),
   // 后端用 tauri::ipc::Response 返回原始字节(而非 Vec<u8> 序列化成 JSON number[]),
   // invoke() 对应解析为 ArrayBuffer,避免大文件在 IPC 上被膨胀成文本。
   readSourceBytes: (id: number) => invoke<ArrayBuffer>("read_source_bytes", { id }),

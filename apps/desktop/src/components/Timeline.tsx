@@ -5,6 +5,8 @@ import {
   FileQuestion,
   Stethoscope,
   ArrowLeftRight,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 import type { TimelineGroup, DocumentSummary, EncounterSummary } from "../types";
 import {
@@ -159,14 +161,40 @@ function EncounterCard({
 export default function Timeline({
   groups,
   onSelect,
+  onLoadDemo,
+  loadingDemo,
+  demoError,
 }: {
   groups: TimelineGroup[];
   onSelect: (id: number) => void;
+  /** 空状态下「加载示例数据」入口(见 App.tsx);未传则不显示该按钮。 */
+  onLoadDemo?: () => void;
+  loadingDemo?: boolean;
+  demoError?: string | null;
 }) {
   if (groups.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-slate-400 text-base px-6 text-center">
-        还没有记录。导入病历后,这里会按时间显示你的生命时间线。
+      <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-400 text-base px-6 text-center">
+        <div>暂无记录 —— 点「加载示例数据」一键试用,或到「导入」页拖入你的病历。</div>
+        {onLoadDemo && (
+          <>
+            <button
+              type="button"
+              onClick={onLoadDemo}
+              disabled={loadingDemo}
+              className="flex items-center gap-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-wait rounded-xl px-4 py-2.5 transition-colors cursor-pointer"
+            >
+              {loadingDemo ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {loadingDemo ? "加载中…" : "加载示例数据(张建国)"}
+            </button>
+            <span className="text-xs text-slate-400">示例数据,可随时删除保险箱重来</span>
+            {demoError && <div className="text-sm text-rose-600 max-w-md break-all">{demoError}</div>}
+          </>
+        )}
       </div>
     );
   }

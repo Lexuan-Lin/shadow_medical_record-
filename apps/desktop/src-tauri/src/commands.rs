@@ -1,7 +1,7 @@
 use crate::dto::*;
 use core_model::{DocType, Document, Vault};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 /// DocumentSummary + 影像检查切片数(imaging overhaul P1):影像 study 文档在时间线
@@ -149,6 +149,64 @@ pub fn import_paths(
     }
     v.rebuild_encounters().map_err(|e| e.to_string())?;
     Ok(out)
+}
+
+/// 示例数据(张建国)目录:随 `bundle.resources`(见 tauri.conf.json)打包进 `demo-data/`。
+/// `tauri-build` 在 `build.rs` 编译期就把它复制进 `target/(debug|release)`,而
+/// `resource_dir()` 在「从 target/ 目录运行」时会识别为开发环境并直接返回该目录 ——
+/// 所以 `tauri dev` 和打包后的 .app 都能解析到同一份资源,无需区分。极端情况下(资源目录
+/// 未就绪)回退到编译期已知的源码目录,仅在本机构建时生效。
+fn demo_data_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(dir) = app.path().resource_dir() {
+        let candidate = dir.join("demo-data");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    let dev_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("demo-data");
+    if dev_dir.is_dir() {
+        return Some(dev_dir);
+    }
+    None
+}
+
+/// 递归收集目录下全部常规文件(demo-data/ 下有 corpus/scenarios/imaging 子目录)。
+fn collect_files_recursive(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_recursive(&path, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+}
+
+/// 一键「加载示例数据」:把打包好的张建国示例病历批量导入保险箱,让刚装好 .dmg 的
+/// 测试者无需自己找文件就能试用。按路径排序保证每次结果可复现;单个文件导入失败
+/// 不拖垮整批(与 import_paths/scan_inbox 一致),已存在的记录会被 pipeline::ingest
+/// 去重,重复点击是安全的。返回成功导入的文件数。
+#[tauri::command]
+pub fn load_demo_data(app: tauri::AppHandle, state: State<AppState>) -> Result<usize, String> {
+    let dir = demo_data_dir(&app)
+        .ok_or_else(|| "示例数据未随应用打包,无法加载".to_string())?;
+    let mut files = Vec::new();
+    collect_files_recursive(&dir, &mut files);
+    files.sort();
+
+    let v = lock(&state)?;
+    let mut count = 0usize;
+    for path in &files {
+        match pipeline::ingest(&v, path) {
+            Ok(_) => count += 1,
+            Err(e) => eprintln!("[demo-data] ingest failed for {}: {e}", path.display()),
+        }
+    }
+    v.rebuild_encounters().map_err(|e| e.to_string())?;
+    Ok(count)
 }
 
 // 大文件(照片/DICOM)走 tauri::ipc::Response 返回原始字节,而非 Vec<u8>(会被序列化成
@@ -316,4 +374,42 @@ pub fn get_audit_log(state: State<AppState>) -> Result<Vec<AuditEntryDto>, Strin
 #[tauri::command]
 pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod demo_data_tests {
+    use super::collect_files_recursive;
+    use std::path::PathBuf;
+
+    /// 验证 demo_data_dir() 的开发环境回退路径(`CARGO_MANIFEST_DIR/demo-data`)
+    /// 确实存在、且 collect_files_recursive 能递归穿过 corpus/scenarios/imaging
+    /// 三个子目录收集到全部 25 个文件。不需要构造 AppHandle 就能核验路径逻辑与
+    /// 打包清单(tauri.conf.json `bundle.resources: ["demo-data"]`)是否对得上 ——
+    /// 数量对不上时,多半是有人往 demo-data/ 加了文件却忘了更新这条断言,或者
+    /// 反过来忘了往 examples/demo-dataset/ 同步。
+    #[test]
+    fn dev_fallback_dir_has_expected_curated_files() {
+        let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("demo-data");
+        assert!(dev_dir.is_dir(), "demo-data/ missing at {dev_dir:?}");
+
+        for sub in ["corpus", "scenarios", "imaging"] {
+            assert!(dev_dir.join(sub).is_dir(), "demo-data/{sub} missing");
+        }
+
+        let mut files = Vec::new();
+        collect_files_recursive(&dev_dir, &mut files);
+        assert_eq!(files.len(), 25, "unexpected demo-data file count: {files:?}");
+
+        // 3 张真实 DICOM(头颅MRI/胸部X线/腹部超声)一定都在
+        for name in [
+            "2023-11-02_头颅MRI_华山.dcm",
+            "2025-02-18_胸部X线_协和.dcm",
+            "2024-03-22_腹部超声动态_华山.dcm",
+        ] {
+            assert!(
+                files.iter().any(|p| p.file_name().and_then(|n| n.to_str()) == Some(name)),
+                "missing imaging file: {name}"
+            );
+        }
+    }
 }

@@ -9,6 +9,8 @@ import {
   ShieldCheck,
   Copy,
   Check,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -34,6 +36,26 @@ export default function ImportView({ onImported }: { onImported: () => void }) {
   const [exportMsg, setExportMsg] = useState<
     { kind: "ok"; text: string; path: string } | { kind: "err"; text: string } | null
   >(null);
+
+  // 一键「加载示例数据」(张建国):给刚装好 .dmg 的测试者一个免找文件的试用入口
+  const [demoLoading, setDemoLoading] = useState(false);
+  const [demoMsg, setDemoMsg] = useState<
+    { kind: "ok"; text: string } | { kind: "err"; text: string } | null
+  >(null);
+
+  const doLoadDemo = async () => {
+    setDemoLoading(true);
+    setDemoMsg(null);
+    try {
+      const n = await api.loadDemoData();
+      onImported();
+      setDemoMsg({ kind: "ok", text: `已加载 ${n} 份示例记录,可在生命时间线查看。` });
+    } catch (e) {
+      setDemoMsg({ kind: "err", text: `加载示例数据失败:${String(e)}` });
+    } finally {
+      setDemoLoading(false);
+    }
+  };
 
   // 加密分享
   const [shareDays, setShareDays] = useState(5);
@@ -158,6 +180,43 @@ export default function ImportView({ onImported }: { onImported: () => void }) {
       <div className="max-w-3xl mx-auto">
         <h1 className="text-2xl font-bold text-slate-900 mb-6">导入 · 导出</h1>
 
+        {/* 一键试用:免找文件,直接加载内置的张建国示例数据集 */}
+        <div className="rounded-2xl border border-violet-200 bg-violet-50/50 p-5 mb-5">
+          <div className="flex items-center gap-2 text-violet-800 font-medium mb-2">
+            <Sparkles className="w-5 h-5" /> 一键试用
+          </div>
+          <div className="text-sm text-slate-600 leading-relaxed mb-3">
+            还没有自己的病历?加载内置的<b className="text-slate-800">张建国</b>示例数据集
+            (含检验报告、门诊病历、处方、影像检查等),立即体验完整的生命时间线。
+            <br />
+            <span className="text-xs text-slate-400">示例数据,可随时删除保险箱重来。</span>
+          </div>
+          <button
+            type="button"
+            onClick={doLoadDemo}
+            disabled={demoLoading}
+            className="flex items-center gap-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-wait rounded-xl px-4 py-2.5 transition-colors cursor-pointer"
+          >
+            {demoLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            {demoLoading ? "加载中…" : "加载示例数据(张建国)"}
+          </button>
+          {demoMsg && (
+            <div
+              className={`mt-3 rounded-xl px-4 py-2.5 text-sm leading-relaxed break-all ${
+                demoMsg.kind === "ok"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-rose-50 text-rose-700"
+              }`}
+            >
+              {demoMsg.text}
+            </div>
+          )}
+        </div>
+
         <div
           className={`rounded-2xl border-2 border-dashed p-12 text-center transition-all ${
             dragging ? "border-blue-400 bg-blue-50" : "border-slate-300 bg-white"
@@ -276,17 +335,20 @@ export default function ImportView({ onImported }: { onImported: () => void }) {
             生成一个<b className="text-slate-700">端到端加密</b>的 HTML 文件(含浏览器内查看器):
             <b className="text-slate-700">零服务器</b>,医生用任意浏览器打开、输入<b className="text-slate-700">口令</b>即在本地解密查看,数据不上传任何服务器。
           </div>
-          <div className="flex items-center gap-3 mb-3">
+          <div className="flex items-center gap-3 mb-1.5">
             <label className="text-sm text-slate-600">有效期</label>
             <input
               type="number"
               min={1}
-              max={365}
+              max={36500}
               value={shareDays}
               onChange={(e) => setShareDays(Number(e.target.value))}
-              className="w-20 text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-emerald-500"
+              className="w-24 text-sm border border-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-emerald-500"
             />
             <span className="text-sm text-slate-500">天</span>
+          </div>
+          <div className="text-xs text-slate-400 mb-3">
+            演示/长期分享可设很大有效期(如 36500 天 ≈ 100 年)
           </div>
           <button
             type="button"

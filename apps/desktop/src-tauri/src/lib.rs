@@ -42,6 +42,7 @@ pub fn run() {
             commands::search,
             commands::get_document,
             commands::import_paths,
+            commands::load_demo_data,
             commands::read_source_bytes,
             commands::render_dicom,
             commands::get_imaging_instances,

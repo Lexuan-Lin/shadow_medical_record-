@@ -20,6 +20,8 @@ export default function App() {
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [tab, setTab] = useState<string>("timeline");
   const [reloadKey, setReloadKey] = useState(0);
+  const [loadingDemo, setLoadingDemo] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
 
   const loadTimeline = () =>
     api.listTimelineGrouped().then(setGroups).catch((e) => setError(String(e)));
@@ -46,6 +48,18 @@ export default function App() {
   const afterImport = () => {
     loadTimeline();
     setReloadKey((k) => k + 1); // 让病人 banner 重新归纳
+  };
+
+  // 空时间线状态下的「加载示例数据」入口(见 Timeline.tsx),与 ImportView 里的
+  // 同名按钮走同一条命令,方便测试者不必先切到「导入」页就能一键试用。
+  const loadDemo = () => {
+    setLoadingDemo(true);
+    setDemoError(null);
+    api
+      .loadDemoData()
+      .then(() => afterImport())
+      .catch((e) => setDemoError(String(e)))
+      .finally(() => setLoadingDemo(false));
   };
 
   // 收件箱(Watch Folder)自动导入完成后,后端会发出 vault-changed;这里刷新时间线 + banner
@@ -86,7 +100,13 @@ export default function App() {
             ) : tab === "audit" ? (
               <AuditView onNav={nav} />
             ) : (
-              <Timeline groups={groups} onSelect={openDoc} />
+              <Timeline
+                groups={groups}
+                onSelect={openDoc}
+                onLoadDemo={loadDemo}
+                loadingDemo={loadingDemo}
+                demoError={demoError}
+              />
             )}
             {detail && (
               <div className="absolute inset-0 z-10 bg-slate-50 flex flex-col">
