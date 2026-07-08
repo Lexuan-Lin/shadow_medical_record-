@@ -36,6 +36,34 @@ fn fmt_date(d: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
     d.map(|x| x.format("%Y-%m-%d").to_string())
 }
 
+/// 单个影像检查内嵌完整 DICOM 字节的上限:超过则降级为“锚点切片 PNG + 说明”,
+/// 避免单份分享因一叠大序列爆炸(014 §5.3)。
+const SHARE_IMAGING_CAP: usize = 40 * 1024 * 1024; // 40 MB / study
+/// 整份分享内嵌原始字节(影像+图片)的总上限:一旦累计到顶,后续影像一律降级为
+/// PNG + 说明(014 §5.4 自包含 HTML 体积上限保护)。绝不静默截断——每个被降级的
+/// 检查都在其卡片留说明,并汇总进 payload.degraded。
+const SHARE_TOTAL_CAP: usize = 300 * 1024 * 1024; // 300 MB total
+
+/// 决定某影像检查内嵌方式的结果(便于单测直接断言分档逻辑)。
+#[derive(Debug, PartialEq)]
+enum ImagingTier {
+    /// 内嵌全部切片原始字节 → 浏览器交互式阅片。
+    Interactive,
+    /// 降级:只内嵌锚点切片 PNG + 说明。`by_total` 区分“单检查超限”还是“总量超限”。
+    PngFallback { by_total: bool },
+}
+
+/// 纯函数:给定本检查压缩后总字节数、已内嵌总字节数,判定分档。抽出来便于测试。
+fn decide_imaging_tier(study_bytes: usize, already_embedded: usize) -> ImagingTier {
+    if study_bytes > SHARE_IMAGING_CAP {
+        return ImagingTier::PngFallback { by_total: false };
+    }
+    if already_embedded + study_bytes > SHARE_TOTAL_CAP {
+        return ImagingTier::PngFallback { by_total: true };
+    }
+    ImagingTier::Interactive
+}
+
 /// 构建加密分享 HTML。返回 `(html, 分组后的口令, 记录数)`。
 pub fn build_encrypted_share(v: &Vault, expires_days: u32) -> Result<(String, String, i64), String> {
     let records = crate::export::gather_records(v)?;
@@ -47,18 +75,78 @@ pub fn build_encrypted_share(v: &Vault, expires_days: u32) -> Result<(String, St
     // ── 记录数组 ──
     let mut record_count: i64 = 0;
     let mut records_json: Vec<serde_json::Value> = Vec::new();
+    // 已内嵌原始字节累计(影像切片 + 图片),用于整份体积上限判定。
+    let mut embedded_bytes: usize = 0;
+    // 被降级为 PNG 的影像检查标题(汇总进 payload,避免静默截断)。
+    let mut degraded: Vec<String> = Vec::new();
     for rec in &records {
         let doc = &rec.doc;
         let sf = &rec.source_file;
         let title = doc.title.clone().unwrap_or_else(|| sf.original_name.clone());
 
-        // 仅内嵌 image/* 原件为 data-URI;DICOM 与 PDF v1.0 不内嵌(仅文字)。
+        // 仅内嵌 image/* 原件为 data-URI;PDF 不内嵌(仅文字)。
         let mut images: Vec<String> = Vec::new();
         if sf.mime_type.starts_with("image/") {
             let bytes =
                 std::fs::read(v.root_join(&sf.storage_path)).map_err(|e| e.to_string())?;
+            embedded_bytes += bytes.len();
             let b64 = B64.encode(&bytes);
             images.push(format!("data:{};base64,{}", sf.mime_type, b64));
+        }
+
+        // ── 影像(DICOM):按体积分档内嵌(诊断档 / 关键切片降级)──
+        let mut dicom_json = serde_json::Value::Null;
+        if sf.mime_type == "application/dicom" {
+            // 取该检查的切片清单(已按堆栈顺序);无切片记录时退回文档自身锚点切片。
+            let insts = v.imaging_instances(doc.id).map_err(|e| e.to_string())?;
+            let ids: Vec<i64> = if insts.is_empty() {
+                vec![sf.id]
+            } else {
+                insts.iter().map(|i| i.source_file_id).collect()
+            };
+            // 逐张读原始字节(顺序 = 堆栈顺序)。
+            let mut slices: Vec<Vec<u8>> = Vec::with_capacity(ids.len());
+            for id in &ids {
+                if let Some(s) = v.source_file_by_id(*id).map_err(|e| e.to_string())? {
+                    let b = std::fs::read(v.root_join(&s.storage_path)).map_err(|e| e.to_string())?;
+                    slices.push(b);
+                }
+            }
+            let study_bytes: usize = slices.iter().map(|b| b.len()).sum();
+            match decide_imaging_tier(study_bytes, embedded_bytes) {
+                ImagingTier::Interactive => {
+                    embedded_bytes += study_bytes;
+                    let frames: Vec<String> = slices.iter().map(|b| B64.encode(b)).collect();
+                    dicom_json = serde_json::json!({
+                        "mode": "interactive",
+                        "frames": frames,
+                        "count": ids.len(),
+                    });
+                }
+                ImagingTier::PngFallback { by_total } => {
+                    degraded.push(title.clone());
+                    // 锚点切片(第一张)渲成 PNG;不支持的压缩则连 PNG 也没有,只留说明。
+                    let png = slices
+                        .first()
+                        .and_then(|b| dicom::render_png(b).ok())
+                        .map(|p| format!("data:image/png;base64,{}", B64.encode(&p)));
+                    let note = if by_total {
+                        "为控制分享文件体积,本影像未内嵌完整序列(整份已达上限并降级);如需诊断级请当面出示或用托管分享(后续)。".to_string()
+                    } else {
+                        format!(
+                            "完整影像较大未内嵌(约 {} MB,超单检查 {} MB 上限);如需诊断级请当面出示或用托管分享(后续)。",
+                            study_bytes / 1024 / 1024,
+                            SHARE_IMAGING_CAP / 1024 / 1024
+                        )
+                    };
+                    dicom_json = serde_json::json!({
+                        "mode": "png",
+                        "png": png,
+                        "note": note,
+                        "count": ids.len(),
+                    });
+                }
+            }
         }
 
         records_json.push(serde_json::json!({
@@ -68,8 +156,17 @@ pub fn build_encrypted_share(v: &Vault, expires_days: u32) -> Result<(String, St
             "title": title,
             "text": rec.text,
             "images": images,
+            "dicom": dicom_json,
         }));
         record_count += 1;
+    }
+
+    if !degraded.is_empty() {
+        eprintln!(
+            "share: {} 个影像检查因体积上限降级为关键切片:{}",
+            degraded.len(),
+            degraded.join("、")
+        );
     }
 
     let payload = serde_json::json!({
@@ -82,6 +179,7 @@ pub fn build_encrypted_share(v: &Vault, expires_days: u32) -> Result<(String, St
             "record_count": record_count,
         },
         "records": records_json,
+        "degraded": degraded,
     });
     let plaintext =
         serde_json::to_vec(&payload).map_err(|e| format!("serialize payload: {e}"))?;
@@ -109,7 +207,11 @@ pub fn build_encrypted_share(v: &Vault, expires_days: u32) -> Result<(String, St
     let passphrase_raw = B64URL.encode(key_bytes);
     let passphrase_grouped = group_passphrase(&passphrase_raw);
 
+    // dicom-parser 内联进 HTML(约 32KB),保证分享文件自包含、离线可用。
+    // 用 replace 在运行时注入而非写死进模板字面量,避免其内容与 Rust 原始字符串
+    // 分隔符冲突;先注入解析器,再注入 blob(解析器体量小、注入顺序无副作用)。
     let html = VIEWER_TEMPLATE
+        .replace("/*__DICOM_PARSER__*/", DICOM_PARSER_JS)
         .replace("__BLOB__", &blob_b64)
         .replace("__EXPIRES__", &expires.to_rfc3339())
         .replace("__GENERATED__", &generated.to_rfc3339());
@@ -117,9 +219,13 @@ pub fn build_encrypted_share(v: &Vault, expires_days: u32) -> Result<(String, St
     Ok((html, passphrase_grouped, record_count))
 }
 
-/// 自包含查看器模板。占位符 `__BLOB__` / `__EXPIRES__` / `__GENERATED__` 用
-/// `str::replace` 注入 —— 避免 `format!` 与内联 JS/CSS 的 `{}` 冲突。
-/// 无任何外部引用,严格离线可用。
+/// 内联的 dicom-parser(UMD 版,浏览器全局 `dicomParser`)。随源码 vendored 进
+/// 仓库,`include_str!` 在编译期嵌入 —— 不依赖 node_modules 即可构建。
+const DICOM_PARSER_JS: &str = include_str!("vendor/dicomParser.min.js");
+
+/// 自包含查看器模板。占位符 `__BLOB__` / `__EXPIRES__` / `__GENERATED__` 与
+/// `/*__DICOM_PARSER__*/` 用 `str::replace` 注入 —— 避免 `format!` 与内联 JS/CSS
+/// 的 `{}` 冲突。无任何外部引用,严格离线可用。
 const VIEWER_TEMPLATE: &str = r####"<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -173,6 +279,28 @@ const VIEWER_TEMPLATE: &str = r####"<!doctype html>
   .med .usage { font-size: 13px; color: #64748b; line-height: 1.6; }
   .meds-label { font-size: 11px; font-family: ui-monospace, monospace; color: #94a3b8; letter-spacing: .15em; text-transform: uppercase; }
   .img { max-width: 100%; max-height: 480px; display: block; margin: 8px 0; border: 1px solid #e2e8f0; border-radius: 8px; }
+  /* 影像检查:缩略卡 + 说明 */
+  .imaging-card { margin: 10px 0; }
+  .imaging-open { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; background: #0f172a; color: #fff; border: none; border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 600; }
+  .imaging-open:hover { background: #1e293b; }
+  .imaging-open .ico { font-size: 16px; }
+  .imaging-meta { font-size: 12px; color: #64748b; margin-top: 6px; line-height: 1.6; }
+  .imaging-png { max-width: 100%; max-height: 480px; display: block; margin: 8px 0; background: #000; border: 1px solid #e2e8f0; border-radius: 8px; }
+  .imaging-note { font-size: 12px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 8px 10px; margin-top: 6px; line-height: 1.6; }
+  /* 全屏阅片 overlay(移植桌面端 lightbox 观感)*/
+  .dcm-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.9); display: flex; flex-direction: column; }
+  .dcm-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; background: rgba(0,0,0,.6); color: rgba(255,255,255,.85); }
+  .dcm-bar .name { font-family: ui-monospace, Menlo, monospace; font-size: 13px; margin-right: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dcm-btn { font-size: 12px; padding: 6px 12px; border-radius: 8px; background: rgba(255,255,255,.1); color: rgba(255,255,255,.85); border: none; cursor: pointer; }
+  .dcm-btn:hover { background: rgba(255,255,255,.2); }
+  .dcm-doctor { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #fcd34d; }
+  .dcm-sep { width: 1px; height: 16px; background: rgba(255,255,255,.2); }
+  .dcm-idx { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: rgba(255,255,255,.7); }
+  .dcm-hintbar { font-size: 11px; color: rgba(255,255,255,.7); margin-left: auto; }
+  .dcm-stage { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
+  .dcm-stage canvas { display: block; touch-action: none; }
+  .dcm-notice { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.75); color: rgba(255,255,255,.9); font-size: 12px; padding: 8px 16px; border-radius: 8px; max-width: 80%; text-align: center; pointer-events: none; }
+  .dcm-floathint { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.75); color: #fff; font-size: 14px; padding: 10px 20px; border-radius: 999px; pointer-events: none; }
   .statement { text-align: center; font-size: 11px; color: #94a3b8; margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
   .expired { max-width: 480px; margin: 80px auto; text-align: center; background: #fff; border: 1px solid #fecdd3; border-radius: 16px; padding: 40px 28px; }
   .expired h1 { font-size: 18px; color: #be123c; margin: 0 0 10px; }
@@ -198,6 +326,9 @@ const VIEWER_TEMPLATE: &str = r####"<!doctype html>
 </div>
 <div id="app" class="wrap" style="display:none"></div>
 
+<script>
+/*__DICOM_PARSER__*/
+</script>
 <script>
 const EMBEDDED_BLOB = "__BLOB__";
 
@@ -355,6 +486,323 @@ function renderContent(text, docType) {
   return renderBlocks(parseBlocks(text));
 }
 
+// ══ 交互式 DICOM 阅片器(移植 DicomViewer.tsx 的解码逻辑到纯 JS + canvas)══
+// 纯 dicom-parser + canvas,无 Cornerstone / worker / WASM。按需解码 + 有界缓存,
+// 几百帧也只常驻几十 MB(014 §5 大数据顾虑)。
+const DCM_TS_UNCOMPRESSED = new Set(["1.2.840.10008.1.2","1.2.840.10008.1.2.1","1.2.840.10008.1.2.1.99"]);
+const DCM_TS_JPEG_BASELINE = new Set(["1.2.840.10008.1.2.4.50","1.2.840.10008.1.2.4.51"]);
+const DCM_PRESETS = [
+  { label:"默认", center:null, width:null },
+  { label:"脑窗", center:40, width:80 },
+  { label:"骨窗", center:500, width:2000 },
+  { label:"肺窗", center:-600, width:1500 },
+  { label:"软组织", center:40, width:400 },
+];
+const DCM_CACHE_MAX = 7; // 当前帧 + 邻近几帧;超出按离当前最远淘汰。
+
+function dcmNum(ds, tag, def) { const v = ds.uint16(tag); return v === undefined ? def : v; }
+function dcmFloat(ds, tag) { const v = ds.floatString(tag); return (v === undefined || Number.isNaN(v)) ? null : v; }
+
+// 解析每张切片 → 展平成 frames[](NumberOfFrames>1 的多帧展开)。解析失败的切片跳过。
+function dcmBuildFrames(slices) {
+  const frames = [];
+  for (const bytes of slices) {
+    let ds;
+    try { ds = dicomParser.parseDicom(bytes); } catch (e) { continue; }
+    const rows = dcmNum(ds, "x00280010", 0);
+    const columns = dcmNum(ds, "x00280011", 0);
+    if (!rows || !columns) continue;
+    const bitsAllocated = dcmNum(ds, "x00280100", 16);
+    const pixelRepresentation = dcmNum(ds, "x00280103", 0);
+    const samplesPerPixel = dcmNum(ds, "x00280002", 1);
+    const planarConfiguration = dcmNum(ds, "x00280006", 0);
+    const photometric = (ds.string("x00280004") || "MONOCHROME2").trim().toUpperCase();
+    const transferSyntax = (ds.string("x00020010") || "1.2.840.10008.1.2").trim();
+    const nFrames = parseInt(ds.string("x00280008") || "1", 10) || 1;
+    const defaultCenter = dcmFloat(ds, "x00281050");
+    const defaultWidth = dcmFloat(ds, "x00281051");
+    for (let f = 0; f < nFrames; f++) {
+      frames.push({ dataSet: ds, frameIndex: f, rows, columns, bitsAllocated, pixelRepresentation,
+        samplesPerPixel, planarConfiguration, photometric, invert: photometric === "MONOCHROME1",
+        color: samplesPerPixel >= 3, transferSyntax, defaultCenter, defaultWidth });
+    }
+  }
+  return frames;
+}
+
+// 未压缩灰度:读原始像素 → modality rescale(v = raw*slope + intercept)。
+function dcmReadGray(fm) {
+  const ds = fm.dataSet;
+  const pd = ds.elements.x7fe00010;
+  const byteArray = ds.byteArray;
+  const bytesPerPixel = fm.bitsAllocated <= 8 ? 1 : 2;
+  const pxCount = fm.rows * fm.columns;
+  const frameLength = pxCount * bytesPerPixel;
+  const absStart = byteArray.byteOffset + pd.dataOffset + fm.frameIndex * frameLength;
+  const buf = byteArray.buffer.slice(absStart, absStart + frameLength); // 对齐副本
+  const slope = dcmFloat(ds, "x00281053") ?? 1;
+  const intercept = dcmFloat(ds, "x00281052") ?? 0;
+  const out = new Float32Array(pxCount);
+  if (bytesPerPixel === 1) {
+    const raw = new Uint8Array(buf);
+    for (let i = 0; i < pxCount; i++) out[i] = raw[i] * slope + intercept;
+  } else if (fm.pixelRepresentation === 1) {
+    const raw = new Int16Array(buf);
+    for (let i = 0; i < pxCount; i++) out[i] = raw[i] * slope + intercept;
+  } else {
+    const raw = new Uint16Array(buf);
+    for (let i = 0; i < pxCount; i++) out[i] = raw[i] * slope + intercept;
+  }
+  return out;
+}
+
+// 未压缩彩色(RGB)→ ImageData。处理 PlanarConfiguration 0 交错 / 1 平面。
+function dcmReadColor(fm) {
+  const ds = fm.dataSet;
+  const pd = ds.elements.x7fe00010;
+  const byteArray = ds.byteArray;
+  const pxCount = fm.rows * fm.columns;
+  const frameLength = pxCount * 3;
+  const absStart = byteArray.byteOffset + pd.dataOffset + fm.frameIndex * frameLength;
+  const src = new Uint8Array(byteArray.buffer, absStart, frameLength);
+  const img = new ImageData(fm.columns, fm.rows);
+  const d = img.data;
+  if (fm.planarConfiguration === 1) {
+    const plane = pxCount;
+    for (let i = 0; i < pxCount; i++) { d[i*4]=src[i]; d[i*4+1]=src[plane+i]; d[i*4+2]=src[2*plane+i]; d[i*4+3]=255; }
+  } else {
+    for (let i = 0; i < pxCount; i++) { d[i*4]=src[i*3]; d[i*4+1]=src[i*3+1]; d[i*4+2]=src[i*3+2]; d[i*4+3]=255; }
+  }
+  return img;
+}
+
+async function dcmDecodeFrame(fm) {
+  try {
+    const ts = fm.transferSyntax;
+    if (DCM_TS_UNCOMPRESSED.has(ts)) {
+      if (fm.color) return { kind:"rgba", data: dcmReadColor(fm) };
+      return { kind:"gray", values: dcmReadGray(fm), rows: fm.rows, cols: fm.columns, invert: fm.invert };
+    }
+    if (DCM_TS_JPEG_BASELINE.has(ts)) {
+      const pd = fm.dataSet.elements.x7fe00010;
+      // 空 BOT(如超声动态多帧)→ 按 fragment 下标读;有 BOT → 按帧读。
+      const bot = pd.basicOffsetTable;
+      const encoded = (bot && bot.length > 0)
+        ? dicomParser.readEncapsulatedImageFrame(fm.dataSet, pd, fm.frameIndex)
+        : dicomParser.readEncapsulatedPixelDataFromFragments(fm.dataSet, pd, fm.frameIndex);
+      const copy = encoded.slice();
+      const blob = new Blob([copy], { type: "image/jpeg" });
+      const bitmap = await createImageBitmap(blob);
+      return { kind:"bitmap", bitmap, rows: bitmap.height, cols: bitmap.width };
+    }
+    return { kind:"unsupported" }; // JPEG2000 / JPEG-LS / RLE 等此轻量器不解
+  } catch (e) {
+    console.error("DICOM 帧解码失败", e);
+    return { kind:"error" };
+  }
+}
+
+function dcmDefaultWindow(fm, dec) {
+  if (fm.defaultCenter != null && fm.defaultWidth != null && fm.defaultWidth > 0)
+    return { center: fm.defaultCenter, width: fm.defaultWidth };
+  if (dec.kind === "gray") {
+    let mn = Infinity, mx = -Infinity;
+    const v = dec.values;
+    for (let i = 0; i < v.length; i++) { if (v[i] < mn) mn = v[i]; if (v[i] > mx) mx = v[i]; }
+    if (!Number.isFinite(mn) || !Number.isFinite(mx) || mx <= mn) return { center: 128, width: 256 };
+    return { center: (mn + mx) / 2, width: mx - mn };
+  }
+  return { center: 128, width: 256 };
+}
+
+// 打开一个全屏阅片 overlay。slices: Uint8Array[]。返回后自动释放。
+function openDicomViewer(slices, name) {
+  const frames = dcmBuildFrames(slices);
+  const overlay = document.createElement("div");
+  overlay.className = "dcm-overlay";
+  overlay.innerHTML =
+    '<div class="dcm-bar">' +
+      '<span class="name"></span>' +
+      '<button class="dcm-btn" data-z="in">放大</button>' +
+      '<button class="dcm-btn" data-z="out">缩小</button>' +
+      '<span class="dcm-sep"></span>' +
+      '<span class="dcm-doctor" title="窗宽窗位:医生调明暗看不同组织的专业工具">🩺 医生 · 窗位</span>' +
+      DCM_PRESETS.map((p,i)=>'<button class="dcm-btn" data-p="'+i+'">'+esc(p.label)+'</button>').join("") +
+      '<span class="dcm-sep"></span>' +
+      '<button class="dcm-btn" data-reset="1">重置</button>' +
+      '<span class="dcm-idx"></span>' +
+      '<span class="dcm-hintbar"></span>' +
+      '<button class="dcm-btn" data-close="1">关闭 · ESC</button>' +
+    '</div>' +
+    '<div class="dcm-stage"><canvas></canvas>' +
+      '<div class="dcm-notice" style="display:none"></div>' +
+      '<div class="dcm-floathint" style="display:none"></div>' +
+    '</div>';
+  overlay.querySelector(".name").textContent = name || "";
+  document.body.appendChild(overlay);
+
+  const canvas = overlay.querySelector("canvas");
+  const stage = overlay.querySelector(".dcm-stage");
+  const idxEl = overlay.querySelector(".dcm-idx");
+  const hintBar = overlay.querySelector(".dcm-hintbar");
+  const noticeEl = overlay.querySelector(".dcm-notice");
+  const floatHint = overlay.querySelector(".dcm-floathint");
+
+  const cache = new Map();
+  let drawToken = 0;
+  let win = { center: 40, width: 400 };
+  let view = { zoom: 1, panX: 0, panY: 0 };
+  let curIdx = 0;
+  let drag = null;
+  const total = frames.length;
+
+  hintBar.textContent = total > 1 ? "↕ 滚轮翻看每一层 · 左键调明暗 · Ctrl+滚轮缩放" : "左键调明暗 · Ctrl+滚轮缩放";
+
+  function setNotice(t) { if (t) { noticeEl.textContent = t; noticeEl.style.display = "block"; } else noticeEl.style.display = "none"; }
+  function setIdx() { idxEl.textContent = total > 1 ? ("第 " + (curIdx+1) + " / 共 " + total + " 张") : ""; }
+
+  function paint(dec) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const cw = stage.clientWidth, ch = stage.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(cw*dpr) || canvas.height !== Math.round(ch*dpr)) {
+      canvas.width = Math.round(cw*dpr); canvas.height = Math.round(ch*dpr);
+      canvas.style.width = cw+"px"; canvas.style.height = ch+"px";
+    }
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.fillStyle = "#000"; ctx.fillRect(0,0,cw,ch);
+    if (!dec || dec.kind === "unsupported" || dec.kind === "error") return;
+    let srcCols, srcRows, source;
+    if (dec.kind === "bitmap") { srcCols = dec.cols; srcRows = dec.rows; source = dec.bitmap; }
+    else if (dec.kind === "rgba") {
+      srcCols = dec.data.width; srcRows = dec.data.height;
+      const off = document.createElement("canvas"); off.width = srcCols; off.height = srcRows;
+      off.getContext("2d").putImageData(dec.data, 0, 0); source = off;
+    } else {
+      srcCols = dec.cols; srcRows = dec.rows;
+      const w = win.width <= 0 ? 1 : win.width; const low = win.center - w/2;
+      const img = new ImageData(srcCols, srcRows); const d = img.data; const vals = dec.values;
+      for (let i = 0; i < vals.length; i++) {
+        let out = ((vals[i]-low)/w)*255; out = out<0?0:out>255?255:out;
+        if (dec.invert) out = 255-out;
+        const o = i*4; d[o]=d[o+1]=d[o+2]=out; d[o+3]=255;
+      }
+      const off = document.createElement("canvas"); off.width = srcCols; off.height = srcRows;
+      off.getContext("2d").putImageData(img, 0, 0); source = off;
+    }
+    const fit = Math.min(cw/srcCols, ch/srcRows);
+    const dw = srcCols*fit*view.zoom, dh = srcRows*fit*view.zoom;
+    const dx = (cw-dw)/2 + view.panX, dy = (ch-dh)/2 + view.panY;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(source, dx, dy, dw, dh);
+  }
+
+  function evict(current) {
+    while (cache.size > DCM_CACHE_MAX) {
+      let far = -1, farDist = -1;
+      for (const k of cache.keys()) { const dist = Math.abs(k-current); if (dist > farDist) { farDist = dist; far = k; } }
+      if (far < 0) break;
+      const ent = cache.get(far); if (ent && ent.kind === "bitmap") ent.bitmap.close();
+      cache.delete(far);
+    }
+  }
+  function redraw() { const dec = cache.get(curIdx); if (dec) paint(dec); }
+  function prefetch(idx) {
+    for (const j of [idx+1, idx-1]) {
+      if (j < 0 || j >= frames.length || cache.has(j)) continue;
+      dcmDecodeFrame(frames[j]).then(d => {
+        if (cache.has(j)) { if (d.kind === "bitmap") d.bitmap.close(); return; }
+        cache.set(j, d); evict(curIdx);
+      });
+    }
+  }
+  async function showFrame(idx, resetWindow) {
+    if (idx < 0 || idx >= frames.length) return;
+    curIdx = idx; setIdx(); setNotice(null);
+    const token = ++drawToken;
+    const fm = frames[idx];
+    let dec = cache.get(idx);
+    if (!dec) {
+      dec = await dcmDecodeFrame(fm);
+      if (token !== drawToken) { if (dec.kind === "bitmap") dec.bitmap.close(); return; }
+      cache.set(idx, dec); evict(idx);
+    }
+    if (token !== drawToken) return;
+    if (dec.kind === "unsupported") setNotice("此压缩格式暂不支持交互查看(见卡片关键切片)");
+    if (dec.kind === "error") setNotice("影像加载失败");
+    if (resetWindow) win = dcmDefaultWindow(fm, dec);
+    paint(dec); prefetch(idx);
+  }
+
+  // 交互:滚轮翻层 / Ctrl+滚轮缩放;左键调窗位(灰度)否则平移;右键缩放;中键平移。
+  function onWheel(e) {
+    e.preventDefault();
+    if (e.ctrlKey) { const f = e.deltaY>0?0.9:1.1; view.zoom = Math.min(20, Math.max(0.2, view.zoom*f)); redraw(); return; }
+    if (floatHint) floatHint.style.display = "none";
+    const next = curIdx + (e.deltaY>0?1:-1);
+    if (next < 0 || next >= frames.length) return;
+    showFrame(next);
+  }
+  function onDown(e) { drag = { button: e.button, x: e.clientX, y: e.clientY }; }
+  function onMove(e) {
+    if (!drag) return;
+    const dx = e.clientX-drag.x, dy = e.clientY-drag.y; drag.x = e.clientX; drag.y = e.clientY;
+    const dec = cache.get(curIdx);
+    if (drag.button === 0) {
+      if (dec && dec.kind === "gray") { win.width = Math.max(1, win.width + dx*2); win.center = win.center + dy*2; redraw(); }
+      else { view.panX += dx; view.panY += dy; redraw(); }
+    } else if (drag.button === 2) { const f = Math.exp(-dy*0.005); view.zoom = Math.min(20, Math.max(0.2, view.zoom*f)); redraw(); }
+    else { view.panX += dx; view.panY += dy; redraw(); }
+  }
+  function onUp() { drag = null; }
+  function applyPreset(i) {
+    const p = DCM_PRESETS[i]; const fm = frames[curIdx]; const dec = cache.get(curIdx);
+    if (!fm || !dec) return;
+    win = (p.center == null || p.width == null) ? dcmDefaultWindow(fm, dec) : { center: p.center, width: p.width };
+    redraw();
+  }
+  function reset() {
+    view = { zoom: 1, panX: 0, panY: 0 };
+    const fm = frames[curIdx]; const dec = cache.get(curIdx);
+    if (fm && dec) win = dcmDefaultWindow(fm, dec);
+    redraw();
+  }
+
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("mousedown", onDown);
+  canvas.addEventListener("mousemove", onMove);
+  canvas.addEventListener("mouseup", onUp);
+  canvas.addEventListener("mouseleave", onUp);
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  const ro = new ResizeObserver(() => redraw()); ro.observe(stage);
+
+  overlay.addEventListener("click", e => {
+    const t = e.target;
+    if (t.dataset && t.dataset.close) { close(); return; }
+    if (t.dataset && t.dataset.reset) { reset(); return; }
+    if (t.dataset && t.dataset.z) { const f = t.dataset.z === "in" ? 1.2 : 1/1.2; view.zoom = Math.min(20, Math.max(0.2, view.zoom*f)); redraw(); return; }
+    if (t.dataset && t.dataset.p != null && t.dataset.p !== "") { applyPreset(parseInt(t.dataset.p,10)); return; }
+  });
+  function onKey(e) { if (e.key === "Escape") close(); }
+  document.addEventListener("keydown", onKey);
+
+  function close() {
+    drawToken++;
+    ro.disconnect();
+    document.removeEventListener("keydown", onKey);
+    for (const ent of cache.values()) if (ent.kind === "bitmap") ent.bitmap.close();
+    cache.clear();
+    overlay.remove();
+  }
+
+  setIdx();
+  if (frames.length === 0) { setNotice("影像加载失败"); return; }
+  if (total > 1) { floatHint.textContent = "↕ 滚轮上下翻看每一层(共 " + total + " 张)"; floatHint.style.display = "block";
+    setTimeout(() => { floatHint.style.display = "none"; }, 4500); }
+  showFrame(0, true);
+}
+
 function render(payload) {
   const app = document.getElementById("app");
   const p = payload.patient || {};
@@ -370,7 +818,9 @@ function render(payload) {
   html += '<div class="generated">生成时间:' + esc(gen) + " · 共 " + (p.record_count || 0) + " 份记录</div></header>";
   html += '<div class="privacy-note">本页由 MedMe 端到端加密分享生成,数据在您的浏览器本地解密,未上传任何服务器。不构成医疗建议,以原件为准。</div>';
 
-  for (const r of (payload.records || [])) {
+  const records = payload.records || [];
+  for (let ri = 0; ri < records.length; ri++) {
+    const r = records[ri];
     const type = r.doc_type || "unknown";
     const label = TYPE_LABEL[type] || TYPE_LABEL.unknown;
     const bc = TYPE_BADGE[type] || TYPE_BADGE.unknown;
@@ -386,12 +836,36 @@ function render(payload) {
     for (const img of (r.images || [])) {
       if (typeof img === "string" && img.startsWith("data:image/")) html += '<img class="img" src="' + img + '" alt="原件">';
     }
+    // 影像检查:诊断档(交互阅片)或降级档(关键切片 PNG + 说明)。
+    const dcm = r.dicom;
+    if (dcm && dcm.mode === "interactive") {
+      const n = dcm.count || (dcm.frames ? dcm.frames.length : 0);
+      html += '<div class="imaging-card">';
+      html += '<button class="imaging-open" data-dcm="' + ri + '"><span class="ico">🎞</span> 打开影像阅片器' + (n > 1 ? "(共 " + n + " 张,可滚轮翻层)" : "") + '</button>';
+      html += '<div class="imaging-meta">诊断档:完整序列已端到端加密内嵌 · 滚轮翻层 · 左键调窗位 · 窗宽窗位预设</div>';
+      html += '</div>';
+    } else if (dcm && dcm.mode === "png") {
+      html += '<div class="imaging-card">';
+      if (dcm.png) html += '<img class="imaging-png" src="' + dcm.png + '" alt="影像关键切片">';
+      if (dcm.note) html += '<div class="imaging-note">' + esc(dcm.note) + '</div>';
+      html += '</div>';
+    }
     html += "</div></section>";
   }
   html += '<footer class="statement">本页由 MedMe 端到端加密分享生成 · 数据以原件为准 · 不构成医疗建议</footer>';
   app.innerHTML = html;
   document.getElementById("gate").style.display = "none";
   app.style.display = "block";
+
+  // 阅片按钮:点开时才把 base64 帧解成 Uint8Array 交给查看器(关闭即释放,内存有界)。
+  app.querySelectorAll("[data-dcm]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const rec = records[parseInt(btn.getAttribute("data-dcm"), 10)];
+      if (!rec || !rec.dicom || !rec.dicom.frames) return;
+      const slices = rec.dicom.frames.map(f => b64ToBytes(f));
+      openDicomViewer(slices, rec.title || "影像检查");
+    });
+  });
 }
 
 function showExpired(expires) {
@@ -495,6 +969,75 @@ mod tests {
         assert_eq!(payload["records"][0]["doc_type"], "lab_report");
         assert_eq!(payload["patient"]["record_count"], 1);
         assert!(payload["expires"].is_string());
+    }
+
+    #[test]
+    fn imaging_tier_thresholds() {
+        // 小检查 → 内嵌全字节(交互)。
+        assert_eq!(decide_imaging_tier(10 * 1024 * 1024, 0), ImagingTier::Interactive);
+        // 单检查超上限 → PNG(by_total=false)。
+        assert_eq!(
+            decide_imaging_tier(SHARE_IMAGING_CAP + 1, 0),
+            ImagingTier::PngFallback { by_total: false }
+        );
+        // 本身不超,但叠加已内嵌超总上限 → PNG(by_total=true)。
+        assert_eq!(
+            decide_imaging_tier(10 * 1024 * 1024, SHARE_TOTAL_CAP),
+            ImagingTier::PngFallback { by_total: true }
+        );
+    }
+
+    #[test]
+    fn share_embeds_small_dicom_study_bytes() {
+        // 小的单张 DICOM 检查 → payload 里应带交互档:mode=interactive + 原始字节帧;
+        // HTML 里应含内联解析器与查看器入口(自包含、离线可交互)。
+        use core_model::{DocType, NewDocument};
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let dcm = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../examples/demo-dataset/dicom/CT_small.dcm"
+        ))
+        .unwrap();
+        let imp = vault.import("CT_small.dcm", "application/dicom", &dcm).unwrap();
+        vault
+            .add_document(NewDocument {
+                source_file_id: imp.source_file.id,
+                doc_type: DocType::ImagingReport,
+                doc_date: Some(chrono::Utc::now()),
+                doc_date_end: None,
+                title: Some("头颅CT".into()),
+                language: None,
+                page_count: 1,
+            })
+            .unwrap();
+
+        let (html, pass, n) = build_encrypted_share(&vault, 7).unwrap();
+        assert_eq!(n, 1);
+        // 自包含:内联 dicom-parser + 查看器入口都在 HTML 内。
+        assert!(html.contains("dicomParser") || html.contains("dicom-parser"));
+        assert!(html.contains("openDicomViewer"));
+        assert!(!html.contains("/*__DICOM_PARSER__*/")); // 占位符已替换
+
+        // 解密 payload,确认影像以交互档内嵌了原始 DICOM 字节。
+        let stripped: String = pass.chars().filter(|c| !c.is_whitespace()).collect();
+        let key = B64URL.decode(stripped).unwrap();
+        let start = html.find("EMBEDDED_BLOB = \"").unwrap() + "EMBEDDED_BLOB = \"".len();
+        let end = html[start..].find('"').unwrap() + start;
+        let blob = B64.decode(&html[start..end]).unwrap();
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        let pt = cipher
+            .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&pt).unwrap();
+        let dicom = &payload["records"][0]["dicom"];
+        assert_eq!(dicom["mode"], "interactive");
+        let frames = dicom["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 1);
+        // 帧是原始 DICOM 字节的 base64;解回应与磁盘原件一致。
+        let frame0 = B64.decode(frames[0].as_str().unwrap()).unwrap();
+        assert_eq!(frame0, dcm);
+        assert_eq!(payload["degraded"].as_array().unwrap().len(), 0);
     }
 
     #[test]

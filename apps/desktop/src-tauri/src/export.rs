@@ -85,8 +85,13 @@ fn fmt_date(d: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
     d.map(|x| x.format("%Y-%m-%d").to_string())
 }
 
-/// 为图片/DICOM 原件生成内嵌 `<img>` data-URI;PDF 及其他类型不内嵌(仅保留
-/// 文字与文件名),避免额外的解码/渲染成本。
+/// 为图片/DICOM 原件生成内嵌预览块;PDF 及其他类型不内嵌(仅保留文字与文件名),
+/// 避免额外的解码/渲染成本。
+///
+/// 影像(DICOM)导出的是“轻档 · 关键切片”(014 §4):把该检查的**锚点切片**用
+/// `dicom::render_png` 渲成 PNG 内嵌,配一句“完整序列见分享”的说明,像胶片一样能打印。
+/// 渲染务必稳健:遇到不支持的压缩(render_png 失败)或读盘失败时**降级为一行说明**,
+/// 绝不因单条影像中断整份导出。
 fn render_preview(vault: &Vault, sf: &SourceFile) -> Result<Option<String>, String> {
     if sf.mime_type.starts_with("image/") {
         let bytes = std::fs::read(vault.root_join(&sf.storage_path)).map_err(|e| e.to_string())?;
@@ -97,12 +102,17 @@ fn render_preview(vault: &Vault, sf: &SourceFile) -> Result<Option<String>, Stri
         )));
     }
     if sf.mime_type == "application/dicom" {
-        let bytes = std::fs::read(vault.root_join(&sf.storage_path)).map_err(|e| e.to_string())?;
-        let png = dicom::render_png(&bytes).map_err(|e| e.to_string())?;
-        let b64 = B64.encode(&png);
-        return Ok(Some(format!(
-            "<img class=\"preview\" src=\"data:image/png;base64,{b64}\" alt=\"DICOM 预览\">\n"
-        )));
+        // 读盘或渲染失败都降级为说明,不中断导出。
+        let png = std::fs::read(vault.root_join(&sf.storage_path))
+            .ok()
+            .and_then(|bytes| dicom::render_png(&bytes).ok());
+        return Ok(Some(match png {
+            Some(png) => format!(
+                "<figure class=\"imaging\"><img class=\"preview\" src=\"data:image/png;base64,{}\" alt=\"影像关键切片\"><figcaption class=\"caption\">影像:关键切片(完整序列见分享)</figcaption></figure>\n",
+                B64.encode(&png)
+            ),
+            None => "<div class=\"note\">(影像原件为不支持的压缩格式,未能生成关键切片预览;完整序列请见加密分享)</div>\n".to_string(),
+        }));
     }
     Ok(None)
 }
@@ -220,6 +230,9 @@ const CSS: &str = r#"
   .date { font-size: 12px; color: #64748b; font-variant-numeric: tabular-nums; }
   .meta { font-size: 12px; color: #94a3b8; margin: 4px 0 10px; }
   .preview { max-width: 100%; max-height: 480px; display: block; margin: 8px 0; border: 1px solid #e2e8f0; border-radius: 8px; }
+  figure.imaging { margin: 8px 0; }
+  figure.imaging .preview { background: #000; margin-bottom: 4px; }
+  figure.imaging .caption { font-size: 12px; color: #64748b; }
   .ocr-text { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.6; background: #f8fafc; border-radius: 8px; padding: 10px 12px; }
   .note { font-size: 12px; color: #94a3b8; font-style: italic; }
   .statement { text-align: center; font-size: 11px; color: #94a3b8; margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
@@ -272,6 +285,36 @@ mod tests {
         assert!(html.contains("化验")); // 类型徽标
         assert!(html.contains("本导出由 MedMe 生成"));
         assert!(html.starts_with("<!doctype html>"));
+    }
+
+    #[test]
+    fn imaging_export_embeds_anchor_slice() {
+        // 影像检查文档导出应内嵌“关键切片” PNG(轻档),而非跳过或报错。
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let dcm = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../examples/demo-dataset/dicom/CT_small.dcm"
+        ))
+        .unwrap();
+        let imp = vault.import("CT_small.dcm", "application/dicom", &dcm).unwrap();
+        vault
+            .add_document(NewDocument {
+                source_file_id: imp.source_file.id,
+                doc_type: DocType::ImagingReport,
+                doc_date: Some(chrono::Utc::now()),
+                doc_date_end: None,
+                title: Some("头颅CT".into()),
+                language: None,
+                page_count: 1,
+            })
+            .unwrap();
+
+        let (html, count) = build_timeline_html(&vault).unwrap();
+        assert_eq!(count, 1);
+        // 关键切片 PNG 已内嵌,配“完整序列见分享”说明。
+        assert!(html.contains("data:image/png;base64,"));
+        assert!(html.contains("关键切片"));
     }
 
     #[test]
